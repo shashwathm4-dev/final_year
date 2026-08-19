@@ -1,0 +1,62 @@
+{
+  "shoulder_abduction": {
+    "id": "shoulder_abduction",
+    "displayName": "Shoulder Abduction",
+    "description": "Raise your arm sideways away from your body to shoulder height (90°), keeping your elbow straight.",
+    "icon": "💪",
+    "joints": ["hip", "shoulder", "elbow"],
+    "landmarkIndices": {
+      "hip": 23,
+      "shoulder": 11,
+      "elbow": 13
+    },
+    "angleFunction": "threePoint",
+    "target_angle_range": [70, 110],
+    "startAngleThreshold": 18,
+    "peakAngleThreshold": 45,
+    "returnAngleThreshold": 28,
+    "checkpoint_thresholds": [50, 60, 65, 60, 50],
+    "referenceCheckpoints": [5, 45, 90, 45, 5],
+    "note": "Clinical target = 90° (Arm horizontal at shoulder height)"
+  },
+  "neck_tilt": {
+    "id": "neck_tilt",
+    "displayName": "Neck Tilt (Lateral Flexion)",
+    "description": "Tilt your head sideways, bringing your ear toward your shoulder.",
+    "icon": "🧠",
+    "joints": ["left_shoulder", "right_shoulder", "shoulder_midpoint", "nose"],
+    "landmarkIndices": {
+      "left_shoulder": 11,
+      "right_shoulder": 12,
+      "nose": 0
+    },
+    "angleFunction": "lineToLine",
+    "target_angle_range": [18, 35],
+    "startAngleThreshold": 8,
+    "peakAngleThreshold": 18,
+    "returnAngleThreshold": 10,
+    "checkpoint_thresholds": [30, 35, 35, 35, 30],
+    "referenceCheckpoints": [2, 18, 25, 18, 2],
+    "note": "Measures neck lateral tilt relative to shoulder baseline"
+  },
+  "neck_rotation": {
+    "id": "neck_rotation",
+    "displayName": "Neck Rotation",
+    "description": "Turn your head to look over your shoulder, keeping your body still.",
+    "icon": "🔄",
+    "joints": ["nose", "left_ear", "right_ear"],
+    "landmarkIndices": {
+      "nose": 0,
+      "left_ear": 7,
+      "right_ear": 8
+    },
+    "angleFunction": "rotation",
+    "target_angle_range": [30, 70],
+    "startAngleThreshold": 12,
+    "peakAngleThreshold": 28,
+    "returnAngleThreshold": 18,
+    "checkpoint_thresholds": [35, 40, 45, 40, 35],
+    "referenceCheckpoints": [5, 30, 55, 30, 5],
+    "note": "Uses ear/nose displacement heuristic."
+  }
+}

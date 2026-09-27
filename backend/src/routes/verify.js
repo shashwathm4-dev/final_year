@@ -15,7 +15,7 @@ const EXERCISE_NAMES = {
 
 router.post('/verify-rep', async (req, res) => {
   try {
-    const { patientFrame, referenceFrame, exerciseId } = req.body;
+    const { patientFrame, referenceFrame, exerciseId, sessionId } = req.body;
 
     if (!patientFrame) {
       return res.status(400).json({
@@ -25,9 +25,9 @@ router.post('/verify-rep', async (req, res) => {
 
     const exerciseName = EXERCISE_NAMES[exerciseId] || exerciseId || 'Physiotherapy Exercise';
 
-    console.log(`[POST /api/verify-rep] Analyzing form for exercise: ${exerciseName}`);
+    console.log(`[POST /api/verify-rep] Analyzing form for exercise: ${exerciseName} (session: ${sessionId || 'anonymous'})`);
 
-    const result = await verifyExerciseForm(patientFrame, referenceFrame, exerciseName);
+    const result = await verifyExerciseForm(patientFrame, referenceFrame, exerciseName, sessionId);
 
     return res.json(result);
   } catch (err) {
@@ -36,6 +36,7 @@ router.post('/verify-rep', async (req, res) => {
       correct: null,
       issue: 'Server error during VLM verification',
       severity: 'low',
+      source: 'error',
     });
   }
 });

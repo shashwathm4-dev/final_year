@@ -14,6 +14,12 @@ export default function SessionSummary({ repHistory, exerciseConfig, onClose, on
     const correct = repHistory.filter(r => r.correct === true).length;
     const pct = Math.round((correct / total) * 100);
 
+    // Compute quality score averages
+    const qualityReps = repHistory.filter(r => r.qualityScore != null);
+    const avgQuality = qualityReps.length > 0
+      ? Math.round(qualityReps.reduce((acc, r) => acc + r.qualityScore, 0) / qualityReps.length)
+      : null;
+
     // Collect issue frequencies
     const issueMap = {};
     repHistory.forEach(r => {
@@ -27,7 +33,7 @@ export default function SessionSummary({ repHistory, exerciseConfig, onClose, on
       .slice(0, 5)
       .map(([issue, count]) => ({ issue, count }));
 
-    return { total, correct, pct, issues };
+    return { total, correct, pct, avgQuality, issues };
   }, [repHistory]);
 
   return (
@@ -53,7 +59,7 @@ export default function SessionSummary({ repHistory, exerciseConfig, onClose, on
             <span className="stat-label">Correct</span>
           </div>
 
-          <div className="stat-card stat-card-wide">
+          <div className="stat-card">
             <div
               className={`stat-ring ${
                 stats.pct >= 80 ? 'ring-success' : stats.pct >= 50 ? 'ring-warning' : 'ring-error'
@@ -64,6 +70,20 @@ export default function SessionSummary({ repHistory, exerciseConfig, onClose, on
             </div>
             <span className="stat-label">Accuracy</span>
           </div>
+
+          {stats.avgQuality != null && (
+            <div className="stat-card">
+              <div
+                className={`stat-ring ${
+                  stats.avgQuality >= 80 ? 'ring-success' : stats.avgQuality >= 60 ? 'ring-warning' : 'ring-error'
+                }`}
+                style={{ '--progress': stats.avgQuality / 100 }}
+              >
+                <span className="stat-value">{stats.avgQuality}</span>
+              </div>
+              <span className="stat-label">Avg Quality</span>
+            </div>
+          )}
         </div>
 
         {stats.issues.length > 0 && (

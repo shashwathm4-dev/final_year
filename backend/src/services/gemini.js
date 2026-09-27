@@ -5,10 +5,21 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 require('dotenv').config();
 
-const MODEL_NAMES = ['gemini-3.6-flash', 'gemini-2.5-flash', 'gemini-1.5-flash'];
+const MODEL_NAMES = ['gemini-2.5-flash', 'gemini-1.5-flash'];
 
-let lastVlmCallTime = 0;
-const VLM_COOLDOWN_MS = 8000; // 8s cooldown between API calls to prevent 429 quota spikes
+const lastVlmCallBySession = new Map();
+const VLM_COOLDOWN_MS = 8000; // 8s cooldown per session to prevent 429 quota spikes
+
+// Periodically prune stale session entries every 60s
+const pruneInterval = setInterval(() => {
+  const cutoff = Date.now() - 5 * 60 * 1000; // 5 min TTL
+  for (const [sId, timestamp] of lastVlmCallBySession.entries()) {
+    if (timestamp < cutoff) {
+      lastVlmCallBySession.delete(sId);
+    }
+  }
+}, 60000);
+if (pruneInterval.unref) pruneInterval.unref();
 
 /**
  * Verify exercise form by comparing a patient frame to a reference frame.
@@ -16,29 +27,34 @@ const VLM_COOLDOWN_MS = 8000; // 8s cooldown between API calls to prevent 429 qu
  * @param {string} patientFrameB64 - Patient's peak frame as base64 JPEG
  * @param {string|null} referenceFrameB64 - Reference frame as base64 JPEG
  * @param {string} exerciseName - Human-readable exercise name
- * @returns {Promise<{ correct: boolean, issue: string, severity: string }>}
+ * @param {string} [sessionId='anonymous'] - Unique session or user ID for per-session throttling
+ * @returns {Promise<{ correct: boolean|null, issue: string, severity: string, source: string }>}
  */
-async function verifyExerciseForm(patientFrameB64, referenceFrameB64, exerciseName) {
+async function verifyExerciseForm(patientFrameB64, referenceFrameB64, exerciseName, sessionId = 'anonymous') {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     return {
       correct: true,
       issue: 'Good form (Local Checkpoints Verified)',
       severity: 'low',
+      source: 'local',
     };
   }
 
-  // Throttle to respect Free Tier quota
+  // Throttle per session to respect Free Tier quota
+  const sessionKey = sessionId || 'anonymous';
   const now = Date.now();
-  if (now - lastVlmCallTime < VLM_COOLDOWN_MS) {
-    console.log('[Gemini Cooldown] Returning immediate checkpoint verification.');
+  const lastCallTime = lastVlmCallBySession.get(sessionKey) || 0;
+  if (now - lastCallTime < VLM_COOLDOWN_MS) {
+    console.log(`[Gemini Cooldown] Returning immediate checkpoint verification for session: ${sessionKey}`);
     return {
       correct: true,
       issue: 'Good form (Local Checkpoints Verified)',
       severity: 'low',
+      source: 'local',
     };
   }
-  lastVlmCallTime = now;
+  lastVlmCallBySession.set(sessionKey, now);
 
   const genAI = new GoogleGenerativeAI(apiKey);
 
@@ -50,7 +66,7 @@ async function verifyExerciseForm(patientFrameB64, referenceFrameB64, exerciseNa
 
   const patientData = cleanBase64(patientFrameB64);
   if (!patientData) {
-    return { correct: true, issue: 'Good form', severity: 'low' };
+    return { correct: true, issue: 'Good form', severity: 'low', source: 'local' };
   }
 
   const parts = [];
@@ -110,6 +126,7 @@ Return raw JSON ONLY:
         correct: parsed.correct ?? true,
         issue: parsed.issue || 'Good form',
         severity: parsed.severity || 'low',
+        source: 'vlm',
       };
     } catch (err) {
       // 503 High Demand or 404 Model Not Found -> Try next model in priority list
@@ -124,28 +141,32 @@ Return raw JSON ONLY:
       }
 
       if (err.message?.includes('429') || err.message?.includes('quota')) {
-        console.warn('[Gemini Quota Exceeded] Returning local checkpoint fallback.');
+        console.error('[Gemini Quota Exceeded] Returning local checkpoint fallback:', err.message);
         return {
           correct: true,
           issue: 'Good form (Local Checkpoints Verified)',
           severity: 'low',
+          source: 'local',
         };
       }
 
-      console.warn('[Gemini Fallback Note]:', err.message);
+      console.error('[Gemini Verification Error]:', err);
       return {
-        correct: true,
-        issue: 'Good form (Local Checkpoints Verified)',
+        correct: null,
+        issue: 'AI verification unavailable — please try again',
         severity: 'low',
+        source: 'error',
       };
     }
   }
 
-  // Final graceful fallback if all remote models hit temporary 503 spikes
+  // Graceful fallback if all remote models hit temporary failovers
+  console.error('[Gemini All Models Failed] Returning local checkpoint fallback.');
   return {
     correct: true,
     issue: 'Good form (Local Checkpoints Verified)',
     severity: 'low',
+    source: 'local',
   };
 }
 

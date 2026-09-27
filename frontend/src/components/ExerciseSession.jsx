@@ -3,7 +3,8 @@
  * Composes PoseCamera + angle computation + rep detection + checkpoint comparison.
  * Handles the full flow: detection → angle → rep → compare → verify → log → feedback.
  */
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import PoseCamera from './PoseCamera';
 import FeedbackToast from './FeedbackToast';
 import SessionSummary from './SessionSummary';
@@ -11,10 +12,32 @@ import usePoseLandmarker from '../hooks/usePoseLandmarker';
 import useAngleComputation from '../hooks/useAngleComputation';
 import useRepDetection from '../hooks/useRepDetection';
 import { computeCheckpoints, compareToReference, describeMismatch } from '../utils/checkpointComparison';
+import { computeRepQuality } from '../utils/repQuality';
 import { startSession, logRep, verifyRep } from '../services/api';
+import defaultExercises from '../config/exercises.json';
 
-export default function ExerciseSession({ exerciseConfig, onBack }) {
+export default function ExerciseSession({ exerciseConfig: propConfig, onBack: propOnBack }) {
+  const { exerciseId } = useParams();
+  const navigate = useNavigate();
+
+  const exerciseConfig = useMemo(() => {
+    if (propConfig) return propConfig;
+    if (exerciseId && defaultExercises[exerciseId]) {
+      return defaultExercises[exerciseId];
+    }
+    return defaultExercises['bicep_curl'];
+  }, [propConfig, exerciseId]);
+
+  const onBack = useCallback(() => {
+    if (propOnBack) {
+      propOnBack();
+    } else {
+      navigate(-1);
+    }
+  }, [propOnBack, navigate]);
+
   const { detectForVideo, isLoading, error, isReady } = usePoseLandmarker();
+
   const { computeAngle } = useAngleComputation(exerciseConfig);
 
   const [sessionId, setSessionId] = useState(null);
@@ -74,25 +97,42 @@ export default function ExerciseSession({ exerciseConfig, onBack }) {
                 patientFrame,
                 referenceFrame: null, // Will use stored reference on backend
                 exerciseId: exerciseConfig.id,
+                sessionId,
               });
 
-              correct = vlmResult.correct ?? true;
+              correct = vlmResult.correct;
               issue = vlmResult.issue || null;
               severity = vlmResult.severity || 'low';
+              if (vlmResult.source === 'error') {
+                verdictSource = 'error';
+              }
             }
           } catch (err) {
             console.warn('VLM verification failed:', err);
-            // Fallback — assume correct since checkpoints passed
-            correct = true;
-            issue = null;
+            correct = null;
+            issue = 'AI verification unavailable — please try again';
+            severity = 'low';
+            verdictSource = 'error';
           } finally {
             setIsVerifying(false);
           }
         }
       }
 
+      // Compute rep quality metrics
+      const quality = computeRepQuality(frames, exerciseConfig);
+
       // Show feedback
-      const feedbackData = { correct, issue, severity, verdictSource, repNumber };
+      const feedbackData = {
+        correct,
+        issue,
+        severity,
+        verdictSource,
+        source: verdictSource,
+        repNumber,
+        qualityScore: quality.qualityScore,
+        limitingFactor: quality.limitingFactor,
+      };
       setFeedback(feedbackData);
 
       // Add to history
@@ -104,6 +144,7 @@ export default function ExerciseSession({ exerciseConfig, onBack }) {
         correct,
         issue,
         severity,
+        ...quality,
       };
       setRepHistory(prev => [...prev, historyEntry]);
 
@@ -117,6 +158,10 @@ export default function ExerciseSession({ exerciseConfig, onBack }) {
         verdictSource,
         correct,
         issue,
+        tempoScore: quality.tempoScore,
+        smoothnessScore: quality.smoothnessScore,
+        romScore: quality.romScore,
+        qualityScore: quality.qualityScore,
       });
     },
     [exerciseConfig, sessionId]
@@ -284,15 +329,20 @@ export default function ExerciseSession({ exerciseConfig, onBack }) {
               {repHistory.map((rep, i) => (
                 <div
                   key={i}
-                  className={`rep-item ${rep.correct ? 'rep-correct' : 'rep-incorrect'}`}
+                  className={`rep-item ${rep.correct === true ? 'rep-correct' : rep.correct === false ? 'rep-incorrect' : 'rep-unknown'}`}
                 >
                   <span className="rep-number">#{rep.repNumber}</span>
                   <span className="rep-angle">{Math.round(rep.peakAngle)}°</span>
-                  <span className={`rep-verdict ${rep.correct ? 'verdict-pass' : 'verdict-fail'}`}>
-                    {rep.correct ? '✓' : '✗'}
+                  {rep.qualityScore != null && (
+                    <span className="rep-quality" style={{ fontSize: '0.75rem', opacity: 0.85, fontWeight: 600 }}>
+                      {rep.qualityScore} pts
+                    </span>
+                  )}
+                  <span className={`rep-verdict ${rep.correct === true ? 'verdict-pass' : rep.correct === false ? 'verdict-fail' : 'verdict-unknown'}`}>
+                    {rep.correct === true ? '✓' : rep.correct === false ? '✗' : '?'}
                   </span>
                   <span className="rep-source">
-                    {rep.verdictSource === 'vlm' ? '🤖' : '📐'}
+                    {rep.verdictSource === 'vlm' ? '🤖' : rep.verdictSource === 'error' ? '⚡' : '📐'}
                   </span>
                 </div>
               ))}

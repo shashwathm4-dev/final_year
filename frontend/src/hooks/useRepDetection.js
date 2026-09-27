@@ -82,6 +82,9 @@ export default function useRepDetection(exerciseConfig, onRepComplete) {
             stateRef.current = STATES.IDLE;
             setState(STATES.IDLE);
             frameBufferRef.current = [];
+            peakAngleRef.current = 0;
+            peakFrameRef.current = null;
+            startFrameRef.current = null;
           }
           break;
         }
@@ -99,6 +102,16 @@ export default function useRepDetection(exerciseConfig, onRepComplete) {
           if (angle < peakAngleThreshold) {
             stateRef.current = STATES.DESCENDING;
             setState(STATES.DESCENDING);
+          }
+
+          // False start reset if angle drops below threshold
+          if (angle < startAngleThreshold * 0.5) {
+            stateRef.current = STATES.IDLE;
+            setState(STATES.IDLE);
+            frameBufferRef.current = [];
+            peakAngleRef.current = 0;
+            peakFrameRef.current = null;
+            startFrameRef.current = null;
           }
           break;
         }
@@ -135,6 +148,17 @@ export default function useRepDetection(exerciseConfig, onRepComplete) {
             if (onRepComplete) {
               onRepComplete(repData);
             }
+            break;
+          }
+
+          // False start reset if angle drops below threshold
+          if (angle < startAngleThreshold * 0.5) {
+            stateRef.current = STATES.IDLE;
+            setState(STATES.IDLE);
+            frameBufferRef.current = [];
+            peakAngleRef.current = 0;
+            peakFrameRef.current = null;
+            startFrameRef.current = null;
           }
           break;
         }

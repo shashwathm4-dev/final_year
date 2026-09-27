@@ -3,6 +3,7 @@
  */
 import { initializeApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
+import { getAuth } from 'firebase/auth';
 
 const firebaseConfig = {
   apiKey: "AIzaSyDFbdBs7xGqgMsd--EuWHRz2EyXKf-tlqo",
@@ -16,13 +17,16 @@ const firebaseConfig = {
 
 let app = null;
 let db = null;
+let auth = null;
 
 try {
   app = initializeApp(firebaseConfig);
   db = getFirestore(app);
+  auth = getAuth(app);
   console.log('✓ Firebase Web App initialized for project: final-year-project-1a22b');
 } catch (err) {
   console.warn('Firebase frontend initialization warning:', err.message);
 }
 
-export { app, db, firebaseConfig };
+export { app, db, auth, firebaseConfig };
+

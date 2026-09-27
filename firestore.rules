@@ -1,0 +1,47 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Users: self read/write, doctor reads patients
+    match /users/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+      allow read: if request.auth != null && resource.data.doctorId == request.auth.uid;
+    }
+    
+    // Sessions: patient + assigned doctor can read, patient can write
+    match /sessions/{sessionId} {
+      allow read: if request.auth != null && (
+        request.auth.uid == resource.data.patientId
+        || getUserDoc(resource.data.patientId).data.doctorId == request.auth.uid
+      );
+      allow write: if request.auth != null && request.auth.uid == resource.data.patientId;
+      
+      match /reps/{repId} {
+        allow read: if request.auth != null && (
+          request.auth.uid == get(/databases/$(database)/documents/sessions/$(sessionId)).data.patientId
+          || getUserDoc(get(/databases/$(database)/documents/sessions/$(sessionId)).data.patientId).data.doctorId == request.auth.uid
+        );
+        allow write: if request.auth != null && request.auth.uid == get(/databases/$(database)/documents/sessions/$(sessionId)).data.patientId;
+      }
+    }
+    
+    // Exercises
+    match /exercises/{exerciseId} {
+      allow read: if request.auth != null && resource.data.isCustom == false;
+      allow read: if request.auth != null && request.auth.uid == resource.data.createdBy;
+      allow write: if request.auth != null && request.auth.uid == resource.data.createdBy;
+    }
+    
+    // Assigned exercises
+    match /assignedExercises/{docId} {
+      allow read: if request.auth != null && (
+        request.auth.uid == resource.data.patientId
+        || request.auth.uid == resource.data.doctorId
+      );
+      allow write: if request.auth != null && request.auth.uid == resource.data.doctorId;
+    }
+    
+    function getUserDoc(uid) {
+      return get(/databases/$(database)/documents/users/$(uid));
+    }
+  }
+}

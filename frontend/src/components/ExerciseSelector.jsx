@@ -1,10 +1,26 @@
-/**
- * ExerciseSelector — Card grid for choosing an exercise.
- */
-import exercises from '../config/exercises.json';
+import { useState, useEffect } from 'react';
+import staticExercises from '../config/exercises.json';
+import { getExercises } from '../services/api';
 
 export default function ExerciseSelector({ onSelect }) {
-  const exerciseList = Object.values(exercises);
+  const [exerciseList, setExerciseList] = useState(Object.values(staticExercises));
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function loadExercises() {
+      try {
+        const fetched = await getExercises();
+        if (fetched && fetched.length > 0) {
+          setExerciseList(fetched);
+        }
+      } catch (err) {
+        console.warn('Using default exercises:', err);
+      } finally {
+        setLoading(false);
+      }
+    }
+    loadExercises();
+  }, []);
 
   return (
     <div className="exercise-selector">
@@ -12,6 +28,7 @@ export default function ExerciseSelector({ onSelect }) {
         <h1>AI Physiotherapy Assistant</h1>
         <p className="subtitle">Select an exercise to begin your session</p>
       </div>
+
 
       <div className="exercise-grid">
         {exerciseList.map((ex) => (

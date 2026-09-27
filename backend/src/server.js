@@ -8,6 +8,9 @@ require('dotenv').config();
 
 const verifyRoute = require('./routes/verify');
 const sessionRoute = require('./routes/session');
+const usersRoute = require('./routes/users');
+const exercisesRoute = require('./routes/exercises');
+const assignmentsRoute = require('./routes/assignments');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -21,6 +24,10 @@ app.use(express.urlencoded({ limit: '10mb', extended: true }));
 // Routes
 app.use('/api', verifyRoute);
 app.use('/api', sessionRoute);
+app.use('/api/users', usersRoute);
+app.use('/api/exercises', exercisesRoute);
+app.use('/api/assignments', assignmentsRoute);
+
 
 // Health check
 app.get('/api/health', (req, res) => {

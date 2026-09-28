@@ -5,6 +5,9 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { getAssignments, getMySessions, getExercises } from '../services/api';
+import defaultExercisesJson from '../config/exercises.json';
+
+const staticExercises = Object.values(defaultExercisesJson);
 
 export default function PatientDashboard() {
   const { user, fullName, signOut } = useAuth();
@@ -12,20 +15,22 @@ export default function PatientDashboard() {
 
   const [assignments, setAssignments] = useState([]);
   const [recentSessions, setRecentSessions] = useState([]);
-  const [availableExercises, setAvailableExercises] = useState([]);
+  const [availableExercises, setAvailableExercises] = useState(staticExercises);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function loadPatientData() {
       try {
         const [assigned, sessions, allExercises] = await Promise.all([
-          getAssignments(),
-          getMySessions(),
-          getExercises(),
+          getAssignments().catch(() => []),
+          getMySessions().catch(() => []),
+          getExercises().catch(() => staticExercises),
         ]);
         setAssignments(assigned || []);
         setRecentSessions(sessions || []);
-        setAvailableExercises(allExercises || []);
+        if (allExercises && allExercises.length > 0) {
+          setAvailableExercises(allExercises);
+        }
       } catch (err) {
         console.error('Error loading patient dashboard data:', err);
       } finally {

@@ -7,7 +7,7 @@ import { auth } from '../config/firebase';
 
 const api = axios.create({
   baseURL: '/api',
-  timeout: 30000, // 30s — Gemini can take a while on free tier
+  timeout: 6000, // 6s fast fail so UI is snappy; verification calls can use custom timeout
   headers: {
     'Content-Type': 'application/json',
   },
@@ -149,7 +149,7 @@ export async function logRep(repData) {
  */
 export async function verifyRep(payload) {
   try {
-    const res = await api.post('/verify-rep', payload);
+    const res = await api.post('/verify-rep', payload, { timeout: 30000 });
     return res.data;
   } catch (err) {
     console.warn('VLM verification failed:', err.message);

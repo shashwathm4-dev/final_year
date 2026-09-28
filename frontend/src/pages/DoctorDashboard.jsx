@@ -11,13 +11,16 @@ import {
   assignExerciseToPatient,
   getPatientSessions,
 } from '../services/api';
+import defaultExercisesJson from '../config/exercises.json';
+
+const staticExercises = Object.values(defaultExercisesJson);
 
 export default function DoctorDashboard() {
   const { user, fullName, signOut } = useAuth();
   const navigate = useNavigate();
 
   const [patients, setPatients] = useState([]);
-  const [exercises, setExercises] = useState([]);
+  const [exercises, setExercises] = useState(staticExercises);
   const [selectedPatient, setSelectedPatient] = useState(null);
   const [patientSessions, setPatientSessions] = useState([]);
   const [newPatientEmail, setNewPatientEmail] = useState('');
@@ -34,12 +37,14 @@ export default function DoctorDashboard() {
     async function initDashboard() {
       try {
         const [patientsRes, exercisesRes] = await Promise.all([
-          getDoctorPatients(),
-          getExercises(),
+          getDoctorPatients().catch(() => ({ patients: [] })),
+          getExercises().catch(() => staticExercises),
         ]);
         const pts = patientsRes.patients || [];
         setPatients(pts);
-        setExercises(exercisesRes || []);
+        if (exercisesRes && exercisesRes.length > 0) {
+          setExercises(exercisesRes);
+        }
         if (pts.length > 0) {
           selectPatient(pts[0]);
         }

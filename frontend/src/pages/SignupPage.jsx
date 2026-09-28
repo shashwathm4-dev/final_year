@@ -6,7 +6,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
 export default function SignupPage() {
-  const { signUp } = useAuth();
+  const { signUp, signOut } = useAuth();
   const navigate = useNavigate();
 
   const [email, setEmail] = useState('');
@@ -40,7 +40,10 @@ export default function SignupPage() {
 
     try {
       await signUp(email, password, role, fullName.trim());
-      navigate('/');
+      // Sign out so the user lands on login page with a fresh session
+      await signOut();
+      // Redirect to login page, passing the role so the correct tab is pre-selected
+      navigate('/login', { replace: true, state: { registered: true, registeredRole: role } });
     } catch (err) {
       console.error('Signup error:', err);
       if (err.code === 'auth/email-already-in-use') {

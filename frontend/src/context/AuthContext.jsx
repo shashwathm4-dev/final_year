@@ -15,10 +15,18 @@ import { auth, db } from '../config/firebase';
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);
-  const [role, setRole] = useState(null);
-  const [fullName, setFullName] = useState('');
-  const [loading, setLoading] = useState(true);
+  // Initialize from cache if available for instant dashboard access
+  const [user, setUser] = useState(() => {
+    try {
+      const cached = localStorage.getItem('auth_user_cache');
+      return cached ? JSON.parse(cached) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [role, setRole] = useState(() => localStorage.getItem('user_role') || null);
+  const [fullName, setFullName] = useState(() => localStorage.getItem('user_name') || '');
+  const [loading, setLoading] = useState(!auth ? false : !user);
 
   // Listen for auth state changes
   useEffect(() => {
@@ -30,30 +38,56 @@ export function AuthProvider({ children }) {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
         setUser(firebaseUser);
-        // Fetch role from Firestore users/{uid}
+        try {
+          localStorage.setItem('auth_user_cache', JSON.stringify({
+            uid: firebaseUser.uid,
+            email: firebaseUser.email,
+            displayName: firebaseUser.displayName,
+          }));
+        } catch {
+          // ignore localStorage error
+        }
+
+        // Fetch role from Firestore users/{uid} with quick timeout
         try {
           if (db) {
             const userDocRef = doc(db, 'users', firebaseUser.uid);
-            const userDoc = await getDoc(userDocRef);
-            if (userDoc.exists()) {
+            // 2.5s timeout for Firestore getDoc so page doesn't hang if Firestore is unconfigured or slow
+            const docPromise = getDoc(userDocRef);
+            const timeoutPromise = new Promise((_, reject) =>
+              setTimeout(() => reject(new Error('Firestore timeout')), 2500)
+            );
+            const userDoc = await Promise.race([docPromise, timeoutPromise]);
+            
+            if (userDoc && userDoc.exists()) {
               const data = userDoc.data();
-              setRole(data.role || 'patient');
-              setFullName(data.fullName || firebaseUser.displayName || '');
+              const userRole = data.role || localStorage.getItem('user_role') || 'patient';
+              const name = data.fullName || firebaseUser.displayName || '';
+              setRole(userRole);
+              setFullName(name);
+              localStorage.setItem('user_role', userRole);
+              localStorage.setItem('user_name', name);
             } else {
-              setRole('patient');
+              const fallbackRole = localStorage.getItem('user_role') || 'patient';
+              setRole(fallbackRole);
               setFullName(firebaseUser.displayName || '');
             }
           } else {
-            setRole('patient');
+            const fallbackRole = localStorage.getItem('user_role') || 'patient';
+            setRole(fallbackRole);
           }
         } catch (err) {
-          console.warn('Failed to fetch user role:', err.message);
-          setRole('patient');
+          console.warn('Failed to fetch user role (using cached/fallback):', err.message);
+          const fallbackRole = localStorage.getItem('user_role') || 'patient';
+          setRole(fallbackRole);
         }
       } else {
         setUser(null);
         setRole(null);
         setFullName('');
+        localStorage.removeItem('auth_user_cache');
+        localStorage.removeItem('user_role');
+        localStorage.removeItem('user_name');
       }
       setLoading(false);
     });
@@ -61,14 +95,24 @@ export function AuthProvider({ children }) {
     return () => unsubscribe();
   }, []);
 
-  const signIn = useCallback(async (email, password) => {
+  const signIn = useCallback(async (email, password, expectedRole = null) => {
     if (!auth) throw new Error('Firebase Auth not initialized');
+    if (expectedRole) {
+      setRole(expectedRole);
+      localStorage.setItem('user_role', expectedRole);
+    }
     const cred = await signInWithEmailAndPassword(auth, email, password);
     return cred.user;
   }, []);
 
   const signUp = useCallback(async (email, password, selectedRole, name) => {
     if (!auth) throw new Error('Firebase Auth not initialized');
+    const roleToSet = selectedRole || 'patient';
+    setRole(roleToSet);
+    setFullName(name || '');
+    localStorage.setItem('user_role', roleToSet);
+    if (name) localStorage.setItem('user_name', name);
+
     const cred = await createUserWithEmailAndPassword(auth, email, password);
 
     // Create users/{uid} document in Firestore
@@ -77,13 +121,11 @@ export function AuthProvider({ children }) {
         const userDocRef = doc(db, 'users', cred.user.uid);
         await setDoc(userDocRef, {
           email: cred.user.email,
-          role: selectedRole || 'patient',
+          role: roleToSet,
           fullName: name || '',
           doctorId: null,
           createdAt: new Date().toISOString(),
         });
-        setRole(selectedRole || 'patient');
-        setFullName(name || '');
       } catch (err) {
         console.error('Failed to create user document:', err);
       }
@@ -98,6 +140,9 @@ export function AuthProvider({ children }) {
     setUser(null);
     setRole(null);
     setFullName('');
+    localStorage.removeItem('auth_user_cache');
+    localStorage.removeItem('user_role');
+    localStorage.removeItem('user_name');
   }, []);
 
   const value = {

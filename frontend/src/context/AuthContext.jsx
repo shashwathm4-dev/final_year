@@ -11,6 +11,7 @@ import {
 } from 'firebase/auth';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { auth, db } from '../config/firebase';
+import { syncUserProfile } from '../services/api';
 
 const AuthContext = createContext(null);
 
@@ -102,6 +103,8 @@ export function AuthProvider({ children }) {
       localStorage.setItem('user_role', expectedRole);
     }
     const cred = await signInWithEmailAndPassword(auth, email, password);
+    const effectiveRole = expectedRole || localStorage.getItem('user_role') || 'patient';
+    syncUserProfile({ role: effectiveRole }).catch(() => {});
     return cred.user;
   }, []);
 
@@ -130,6 +133,9 @@ export function AuthProvider({ children }) {
         console.error('Failed to create user document:', err);
       }
     }
+
+    // Also sync to backend persistent store
+    syncUserProfile({ role: roleToSet, fullName: name || '' }).catch(() => {});
 
     return cred.user;
   }, []);

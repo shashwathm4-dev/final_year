@@ -2,15 +2,16 @@
  * Express routes for session & rep logging
  * - POST /api/session/start
  * - POST /api/session/log-rep
+ * - POST /api/session/end
  * - GET /api/session/:id
- * - GET /api/sessions/my
+ * - GET /api/sessions/my (and /api/session/my)
  * - GET /api/sessions/patient/:patientId
  */
 const express = require('express');
 const router = express.Router();
 const requireAuth = require('../middleware/requireAuth');
 const requireRole = require('../middleware/requireRole');
-const { createSession, logRep, getSession, getSessionsByPatient } = require('../services/firestore');
+const { createSession, logRep, endSession, getSession, getSessionsByPatient } = require('../services/firestore');
 
 // Start session — optional auth: if authenticated, saves patientId
 router.post('/session/start', async (req, res) => {
@@ -91,8 +92,24 @@ router.post('/session/log-rep', async (req, res) => {
   }
 });
 
+// Finalize/End a session with summary statistics
+router.post('/session/end', async (req, res) => {
+  try {
+    const { sessionId, totalReps, correctReps } = req.body;
+    if (!sessionId) {
+      return res.status(400).json({ error: 'Missing required field: sessionId' });
+    }
+
+    await endSession(sessionId, { totalReps, correctReps });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error ending session:', err);
+    res.status(500).json({ error: 'Failed to end session' });
+  }
+});
+
 // Patient gets their own sessions
-router.get('/sessions/my', requireAuth, async (req, res) => {
+const handleGetMySessions = async (req, res) => {
   try {
     const sessions = await getSessionsByPatient(req.user.uid);
     res.json({ sessions });
@@ -100,7 +117,9 @@ router.get('/sessions/my', requireAuth, async (req, res) => {
     console.error('Error fetching patient sessions:', err);
     res.status(500).json({ error: 'Failed to fetch sessions' });
   }
-});
+};
+router.get('/sessions/my', requireAuth, handleGetMySessions);
+router.get('/session/my', requireAuth, handleGetMySessions);
 
 // Doctor views specific patient's sessions
 router.get('/sessions/patient/:patientId', requireAuth, requireRole('doctor'), async (req, res) => {
@@ -127,4 +146,3 @@ router.get('/session/:id', async (req, res) => {
 });
 
 module.exports = router;
-

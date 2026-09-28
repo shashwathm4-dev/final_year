@@ -13,12 +13,19 @@ const api = axios.create({
   },
 });
 
-// Attach Firebase Auth ID token to every outgoing request
+// Attach Firebase Auth ID token and role hint to every outgoing request
 api.interceptors.request.use(async (config) => {
   try {
     if (auth && auth.currentUser) {
       const token = await auth.currentUser.getIdToken();
       config.headers.Authorization = `Bearer ${token}`;
+      const cachedRole = localStorage.getItem('user_role');
+      if (cachedRole) {
+        config.headers['X-User-Role'] = cachedRole;
+      }
+      if (auth.currentUser.email) {
+        config.headers['X-User-Email'] = auth.currentUser.email;
+      }
     }
   } catch (err) {
     console.warn('Failed to retrieve Firebase ID token:', err.message);
@@ -139,6 +146,20 @@ export async function logRep(repData) {
     await api.post('/session/log-rep', repData);
   } catch (err) {
     console.warn('Failed to log rep — data not persisted:', err.message);
+  }
+}
+
+/**
+ * End or finalize an active session with completed stats.
+ * @param {{ sessionId: string, totalReps: number, correctReps: number }} sessionData
+ */
+export async function endSession(sessionData) {
+  try {
+    const res = await api.post('/session/end', sessionData);
+    return res.data;
+  } catch (err) {
+    console.warn('Failed to end session on backend:', err.message);
+    return { success: false };
   }
 }
 

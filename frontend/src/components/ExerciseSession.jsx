@@ -13,20 +13,49 @@ import useAngleComputation from '../hooks/useAngleComputation';
 import useRepDetection from '../hooks/useRepDetection';
 import { computeCheckpoints, compareToReference, describeMismatch } from '../utils/checkpointComparison';
 import { computeRepQuality } from '../utils/repQuality';
-import { startSession, logRep, verifyRep } from '../services/api';
+import { startSession, logRep, endSession, verifyRep, getExercise } from '../services/api';
 import defaultExercises from '../config/exercises.json';
+
+const fallbackDefault = Object.values(defaultExercises)[0];
 
 export default function ExerciseSession({ exerciseConfig: propConfig, onBack: propOnBack }) {
   const { exerciseId } = useParams();
   const navigate = useNavigate();
+
+  const [customExercise, setCustomExercise] = useState(null);
+  const [exerciseLoading, setExerciseLoading] = useState(false);
+
+  // Fetch custom exercise if not built-in
+  useEffect(() => {
+    if (propConfig) return;
+    if (exerciseId && defaultExercises[exerciseId]) return;
+    if (!exerciseId) return;
+
+    setExerciseLoading(true);
+    getExercise(exerciseId)
+      .then((data) => {
+        if (data && data.id) {
+          setCustomExercise(data);
+        }
+      })
+      .catch((err) => {
+        console.warn('Could not load custom exercise from API:', err.message);
+      })
+      .finally(() => {
+        setExerciseLoading(false);
+      });
+  }, [exerciseId, propConfig]);
 
   const exerciseConfig = useMemo(() => {
     if (propConfig) return propConfig;
     if (exerciseId && defaultExercises[exerciseId]) {
       return defaultExercises[exerciseId];
     }
-    return defaultExercises['bicep_curl'];
-  }, [propConfig, exerciseId]);
+    if (customExercise) {
+      return customExercise;
+    }
+    return fallbackDefault;
+  }, [propConfig, exerciseId, customExercise]);
 
   const onBack = useCallback(() => {
     if (propOnBack) {
@@ -202,9 +231,17 @@ export default function ExerciseSession({ exerciseConfig: propConfig, onBack: pr
     setIsActive(true);
   };
 
-  const handleStop = () => {
+  const handleStop = async () => {
     setIsActive(false);
     setShowSummary(true);
+    if (sessionId) {
+      const validReps = repHistory.filter((r) => r.correct === true).length;
+      endSession({
+        sessionId,
+        totalReps: repHistory.length,
+        correctReps: validReps,
+      }).catch((err) => console.warn('Could not finalize session on backend:', err.message));
+    }
   };
 
   const stateColors = {

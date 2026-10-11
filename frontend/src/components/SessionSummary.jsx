@@ -7,7 +7,7 @@ import { useMemo } from 'react';
 export default function SessionSummary({ repHistory, exerciseConfig, onClose, onRestart }) {
   const stats = useMemo(() => {
     if (!repHistory || repHistory.length === 0) {
-      return { total: 0, correct: 0, pct: 0, issues: [] };
+      return { total: 0, correct: 0, pct: 0, issues: [], aiVerified: 0, angleOnly: 0 };
     }
 
     const total = repHistory.length;
@@ -33,7 +33,10 @@ export default function SessionSummary({ repHistory, exerciseConfig, onClose, on
       .slice(0, 5)
       .map(([issue, count]) => ({ issue, count }));
 
-    return { total, correct, pct, avgQuality, issues };
+    const aiVerified = repHistory.filter(r => r.verdictSource === 'vlm').length;
+    const angleOnly = repHistory.filter(r => r.verdictSource === 'checkpoint_only').length;
+
+    return { total, correct, pct, avgQuality, issues, aiVerified, angleOnly };
   }, [repHistory]);
 
   return (
@@ -85,6 +88,10 @@ export default function SessionSummary({ repHistory, exerciseConfig, onClose, on
             </div>
           )}
         </div>
+
+        <p className="verification-note" style={{ fontSize: '0.8rem', opacity: 0.8, textAlign: 'center' }}>
+          🤖 AI-verified reps: {stats.aiVerified} · 📐 Angle-check only (AI skipped): {stats.angleOnly}
+        </p>
 
         {stats.issues.length > 0 && (
           <div className="issues-section">

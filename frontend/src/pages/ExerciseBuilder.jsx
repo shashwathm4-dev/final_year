@@ -3,13 +3,13 @@
  * Allows selecting 3 anatomical landmarks, recording demonstration reps,
  * auto-computing the 5-checkpoint trajectory profile, and saving to Firestore.
  */
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import PoseCamera from '../components/PoseCamera';
 import usePoseLandmarker from '../hooks/usePoseLandmarker';
+import useAngleComputation from '../hooks/useAngleComputation';
 import { JOINT_NAME_TO_INDEX } from '../utils/landmarkUtils';
-import { threePointAngle } from '../utils/angleUtils';
 import { createCustomExercise } from '../services/api';
 
 const AVAILABLE_JOINTS = [
@@ -39,6 +39,7 @@ export default function ExerciseBuilder() {
   const [jointB, setJointB] = useState('left_shoulder');
   const [jointC, setJointC] = useState('left_elbow');
   const [tolerance, setTolerance] = useState(25); // degrees tolerance
+  const [allowMirror, setAllowMirror] = useState(true);
 
   // Recording State
   const [isRecording, setIsRecording] = useState(false);
@@ -50,42 +51,54 @@ export default function ExerciseBuilder() {
   const [isSaving, setIsSaving] = useState(false);
 
   const angleBufferRef = useRef([]);
+  const snapshotsRef = useRef([]);        // [{ angle, url }]
+  const lastSnapTsRef = useRef(0);
+  const [referenceFrame, setReferenceFrame] = useState(null);
+
+  // Same angle pipeline as patient sessions (real frame size + optional 3D)
+  const builderConfig = useMemo(
+    () => ({
+      id: 'builder',
+      angleFunction: 'threePoint',
+      landmarkIndices: {
+        a: JOINT_NAME_TO_INDEX[jointA],
+        b: JOINT_NAME_TO_INDEX[jointB],
+        c: JOINT_NAME_TO_INDEX[jointC],
+      },
+      use3D: true,
+    }),
+    [jointA, jointB, jointC]
+  );
+  const { computeAngle } = useAngleComputation(builderConfig);
 
   // Compute live angle from landmarks
   const handleFrame = useCallback(
-    ({ landmarks }) => {
+    ({ landmarks, worldLandmarks, frameSize, captureFrame }) => {
       if (!landmarks) return;
 
-      const idxA = JOINT_NAME_TO_INDEX[jointA];
-      const idxB = JOINT_NAME_TO_INDEX[jointB];
-      const idxC = JOINT_NAME_TO_INDEX[jointC];
+      const { angle, confidence } = computeAngle(landmarks, { size: frameSize, worldLandmarks });
+      if (confidence < 0.3) return;                       // joints not visible enough
+      const rounded = Math.round((angle || 0) * 10) / 10;
+      setCurrentLiveAngle(rounded);
 
-      const pA = landmarks[idxA];
-      const pB = landmarks[idxB];
-      const pC = landmarks[idxC];
-
-      if (pA && pB && pC) {
-        const angle = threePointAngle(
-          [pA.x * 640, pA.y * 480],
-          [pB.x * 640, pB.y * 480],
-          [pC.x * 640, pC.y * 480]
-        );
-        const rounded = Math.round((angle || 0) * 10) / 10;
-        setCurrentLiveAngle(rounded);
-
-        if (isRecording) {
-          angleBufferRef.current.push({
-            angle: rounded,
-            timestamp: Date.now(),
-          });
+      if (isRecording) {
+        const now = Date.now();
+        angleBufferRef.current.push({ angle: rounded, timestamp: now });
+        if (captureFrame && now - lastSnapTsRef.current >= 250 && snapshotsRef.current.length < 40) {
+          lastSnapTsRef.current = now;
+          const url = captureFrame();
+          if (url) snapshotsRef.current.push({ angle: rounded, url });
         }
       }
     },
-    [jointA, jointB, jointC, isRecording]
+    [computeAngle, isRecording]
   );
 
   const startRecording = () => {
     angleBufferRef.current = [];
+    snapshotsRef.current = [];
+    lastSnapTsRef.current = 0;
+    setReferenceFrame(null);
     setRecordedAngles([]);
     setComputedProfile(null);
     setStatusMsg('');
@@ -119,13 +132,27 @@ export default function ExerciseBuilder() {
       return;
     }
 
-    const angles = buffer.map((b) => b.angle);
+    const rawAngles = buffer.map((b) => b.angle);
+    const rawMin = Math.min(...rawAngles);
+    const rawMax = Math.max(...rawAngles);
+    // If the movement STARTS near the larger value, flip it so it starts low and rises
+    const restHigh = rawAngles[0] > (rawMin + rawMax) / 2;
+    const angles = restHigh ? rawAngles.map((a) => Math.round((180 - a) * 10) / 10) : rawAngles;
     setRecordedAngles(angles);
 
     const minAngle = Math.min(...angles);
     const maxAngle = Math.max(...angles);
     const minIdx = angles.indexOf(minAngle);
     const maxIdx = angles.indexOf(maxAngle);
+
+    const restAngle = angles[0];
+    const snaps = snapshotsRef.current;
+    if (snaps.length > 0) {
+      const farthest = snaps.reduce((best, s) =>
+        Math.abs(s.angle - restAngle) > Math.abs(best.angle - restAngle) ? s : best
+      );
+      setReferenceFrame(farthest.url);
+    }
 
     // Pick 5 checkpoints evenly across the recorded movement cycle
     const len = angles.length;
@@ -146,6 +173,7 @@ export default function ExerciseBuilder() {
       startAngleThreshold: Math.round(minAngle + (maxAngle - minAngle) * 0.15),
       peakAngleThreshold: Math.round(minAngle + (maxAngle - minAngle) * 0.75),
       returnAngleThreshold: Math.round(minAngle + (maxAngle - minAngle) * 0.25),
+      angleTransform: restHigh ? { mode: 'supplement' } : null,
     });
 
     setStatusMsg('✓ Form checkpoints automatically computed from demonstration!');
@@ -180,12 +208,20 @@ export default function ExerciseBuilder() {
           c: JOINT_NAME_TO_INDEX[jointC],
         },
         angleFunction: 'threePoint',
+        use3D: true,
+        angleTransform: computedProfile.angleTransform,
+        cameraView: 'front',
+        mode: 'reps',
+        compensationChecks: [],
+        supportsSide: allowMirror && jointA.startsWith(jointB.split('_')[0]) && jointB.startsWith(jointC.split('_')[0]),
+        baseSide: jointA.startsWith('right_') ? 'right' : 'left',
         target_angle_range: computedProfile.target_angle_range,
         startAngleThreshold: computedProfile.startAngleThreshold,
         peakAngleThreshold: computedProfile.peakAngleThreshold,
         returnAngleThreshold: computedProfile.returnAngleThreshold,
         checkpoint_thresholds: computedProfile.checkpoint_thresholds,
         referenceCheckpoints: computedProfile.referenceCheckpoints,
+        referenceFrame,
         note: `Custom clinician routine created by ${user?.email || 'doctor'}`,
       });
 
@@ -300,6 +336,11 @@ export default function ExerciseBuilder() {
               />
             </div>
 
+            <label className="builder-checkbox">
+              <input type="checkbox" checked={allowMirror} onChange={(e) => setAllowMirror(e.target.checked)} />
+              Let patients do this exercise on the other side (mirror the joints)
+            </label>
+
             {computedProfile && (
               <div className="profile-preview" style={{ padding: '1rem', background: 'rgba(255,255,255,0.03)', borderRadius: '8px' }}>
                 <h4 style={{ color: 'var(--teal-400)', marginBottom: '0.5rem' }}>Auto-Extracted 5 Checkpoints (°):</h4>
@@ -311,6 +352,13 @@ export default function ExerciseBuilder() {
                     </div>
                   ))}
                 </div>
+              </div>
+            )}
+
+            {referenceFrame && (
+              <div className="reference-preview" style={{ marginTop: '1rem', textAlign: 'center' }}>
+                <p style={{ marginBottom: '0.5rem', fontWeight: 600 }}>Reference pose captured</p>
+                <img src={referenceFrame} alt="Reference pose" style={{ maxWidth: 240, borderRadius: 8 }} />
               </div>
             )}
 

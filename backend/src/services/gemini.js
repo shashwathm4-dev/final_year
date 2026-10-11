@@ -8,7 +8,15 @@ require('dotenv').config();
 const MODEL_NAMES = ['gemini-2.5-flash', 'gemini-1.5-flash'];
 
 const lastVlmCallBySession = new Map();
-const VLM_COOLDOWN_MS = 8000; // 8s cooldown per session to prevent 429 quota spikes
+const VLM_COOLDOWN_MS = Number(process.env.VLM_COOLDOWN_MS) || 8000;
+
+const skipped = (reason, message) => ({
+  correct: null,
+  issue: message,
+  severity: 'low',
+  source: 'skipped',
+  skipReason: reason, // 'no_api_key' | 'cooldown' | 'no_frame' | 'quota' | 'models_unavailable'
+});
 
 // Periodically prune stale session entries every 60s
 const pruneInterval = setInterval(() => {
@@ -28,17 +36,13 @@ if (pruneInterval.unref) pruneInterval.unref();
  * @param {string|null} referenceFrameB64 - Reference frame as base64 JPEG
  * @param {string} exerciseName - Human-readable exercise name
  * @param {string} [sessionId='anonymous'] - Unique session or user ID for per-session throttling
- * @returns {Promise<{ correct: boolean|null, issue: string, severity: string, source: string }>}
+ * @param {object|null} [exercise=null] - Full exercise config for context
+ * @returns {Promise<{ correct: boolean|null, issue: string, severity: string, source: 'vlm'|'skipped'|'error', skipReason?: string }>}
  */
-async function verifyExerciseForm(patientFrameB64, referenceFrameB64, exerciseName, sessionId = 'anonymous') {
+async function verifyExerciseForm(patientFrameB64, referenceFrameB64, exerciseName, sessionId = 'anonymous', exercise = null) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    return {
-      correct: true,
-      issue: 'Good form (Local Checkpoints Verified)',
-      severity: 'low',
-      source: 'local',
-    };
+    return skipped('no_api_key', 'AI visual check not configured');
   }
 
   // Throttle per session to respect Free Tier quota
@@ -46,13 +50,8 @@ async function verifyExerciseForm(patientFrameB64, referenceFrameB64, exerciseNa
   const now = Date.now();
   const lastCallTime = lastVlmCallBySession.get(sessionKey) || 0;
   if (now - lastCallTime < VLM_COOLDOWN_MS) {
-    console.log(`[Gemini Cooldown] Returning immediate checkpoint verification for session: ${sessionKey}`);
-    return {
-      correct: true,
-      issue: 'Good form (Local Checkpoints Verified)',
-      severity: 'low',
-      source: 'local',
-    };
+    console.log(`[Gemini Cooldown] Skipping VLM verification for session: ${sessionKey}`);
+    return skipped('cooldown', 'AI visual check skipped (rate limit)');
   }
   lastVlmCallBySession.set(sessionKey, now);
 
@@ -66,8 +65,14 @@ async function verifyExerciseForm(patientFrameB64, referenceFrameB64, exerciseNa
 
   const patientData = cleanBase64(patientFrameB64);
   if (!patientData) {
-    return { correct: true, issue: 'Good form', severity: 'low', source: 'local' };
+    return skipped('no_frame', 'No camera frame available for AI check');
   }
+
+  const context = exercise
+    ? `Exercise description: ${exercise.description || 'n/a'}. Target joint-angle range: ${
+        (exercise.target_angle_range || []).join('–')
+      } degrees.`
+    : '';
 
   const parts = [];
 
@@ -80,6 +85,8 @@ async function verifyExerciseForm(patientFrameB64, referenceFrameB64, exerciseNa
 Exercise: ${exerciseName}
 Image 1: Reference CORRECT form.
 Image 2: Patient attempt.
+${context}
+Compare the patient's body position to the reference at the peak of the movement.
 
 Return raw JSON ONLY:
 {
@@ -92,6 +99,7 @@ Return raw JSON ONLY:
     parts.push({ inlineData: { mimeType: 'image/jpeg', data: patientData } });
     parts.push({
       text: `Analyze physiotherapy exercise form for ${exerciseName}.
+${context}
 Return raw JSON ONLY:
 {
   "correct": true,
@@ -109,6 +117,16 @@ Return raw JSON ONLY:
         generationConfig: {
           temperature: 0.1,
           maxOutputTokens: 200,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: 'OBJECT',
+            properties: {
+              correct: { type: 'BOOLEAN' },
+              issue: { type: 'STRING' },
+              severity: { type: 'STRING', enum: ['low', 'medium', 'high'] },
+            },
+            required: ['correct', 'issue', 'severity'],
+          },
         },
       });
 
@@ -142,12 +160,7 @@ Return raw JSON ONLY:
 
       if (err.message?.includes('429') || err.message?.includes('quota')) {
         console.error('[Gemini Quota Exceeded] Returning local checkpoint fallback:', err.message);
-        return {
-          correct: true,
-          issue: 'Good form (Local Checkpoints Verified)',
-          severity: 'low',
-          source: 'local',
-        };
+        return skipped('quota', 'AI visual check skipped (quota reached)');
       }
 
       console.error('[Gemini Verification Error]:', err);
@@ -162,12 +175,7 @@ Return raw JSON ONLY:
 
   // Graceful fallback if all remote models hit temporary failovers
   console.error('[Gemini All Models Failed] Returning local checkpoint fallback.');
-  return {
-    correct: true,
-    issue: 'Good form (Local Checkpoints Verified)',
-    severity: 'low',
-    source: 'local',
-  };
+  return skipped('models_unavailable', 'AI visual check temporarily unavailable');
 }
 
 module.exports = { verifyExerciseForm };

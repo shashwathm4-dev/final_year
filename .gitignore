@@ -18,3 +18,6 @@ build/
 Thumbs.db
 .vscode/
 .idea/
+
+# Local data store
+backend/data/

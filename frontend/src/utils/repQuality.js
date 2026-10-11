@@ -104,3 +104,42 @@ export function computeRepQuality(frames, exerciseConfig) {
     limitingFactor,
   };
 }
+
+/**
+ * Quality scores for a completed hold. Mapped onto the same field names used for reps
+ * so logging and summaries keep working:
+ *   romScore -> accuracy (how close to the target angle)
+ *   smoothnessScore -> steadiness (low wobble)
+ *   tempoScore -> continuity (few interruptions)
+ */
+export function computeHoldQuality(frames, exerciseConfig, repData) {
+  const h = exerciseConfig && exerciseConfig.hold;
+  const angles = (frames || []).map((f) => f.angle);
+  if (!h || angles.length < 5) {
+    return { tempoScore: 70, smoothnessScore: 70, romScore: 70, qualityScore: 70, limitingFactor: 'Insufficient frame data' };
+  }
+
+  const avg = (arr) => arr.reduce((s, v) => s + v, 0) / arr.length;
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+  const meanDev = avg(angles.map((a) => Math.abs(a - h.targetAngle)));
+  const romScore = clamp(Math.round(100 - (meanDev / h.tolerance) * 40), 20, 100);
+
+  const mean = avg(angles);
+  const sd = Math.sqrt(avg(angles.map((a) => (a - mean) ** 2)));
+  const smoothnessScore = clamp(Math.round(100 - sd * 6), 25, 100);
+
+  const tempoScore = clamp(100 - (repData && repData.breaks ? repData.breaks * 20 : 0), 20, 100);
+
+  const qualityScore = Math.round(romScore * 0.4 + smoothnessScore * 0.35 + tempoScore * 0.25);
+
+  let limitingFactor = 'Optimal Form';
+  const lowest = Math.min(romScore, smoothnessScore, tempoScore);
+  if (lowest < 75) {
+    if (lowest === romScore) limitingFactor = 'Hold Accuracy';
+    else if (lowest === smoothnessScore) limitingFactor = 'Hold Steadiness';
+    else limitingFactor = 'Hold Continuity';
+  }
+  return { tempoScore, smoothnessScore, romScore, qualityScore, limitingFactor };
+}
+

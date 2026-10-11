@@ -1,42 +1,32 @@
-/**
- * Express route for POST /api/verify-rep
- * Receives patient frame (base64) + reference frame / exerciseId and invokes Gemini VLM.
- */
 const express = require('express');
 const router = express.Router();
+const requireAuth = require('../middleware/requireAuth');
 const { verifyExerciseForm } = require('../services/gemini');
+const { getExerciseById } = require('../services/firestore');
+const defaultExercises = require('../../../frontend/src/config/exercises.json');
 
-// Exercise ID to human display name mapping fallback
-const EXERCISE_NAMES = {
-  shoulder_abduction: 'Shoulder Abduction',
-  neck_tilt: 'Neck Tilt (Lateral Flexion)',
-  neck_rotation: 'Neck Rotation',
-};
-
-router.post('/verify-rep', async (req, res) => {
+router.post('/verify-rep', requireAuth, async (req, res) => {
   try {
-    const { patientFrame, referenceFrame, exerciseId, sessionId } = req.body;
-
+    const { patientFrame, referenceFrame, exerciseId } = req.body;
     if (!patientFrame) {
-      return res.status(400).json({
-        error: 'Missing required field: patientFrame',
-      });
+      return res.status(400).json({ error: 'Missing required field: patientFrame' });
     }
 
-    const exerciseName = EXERCISE_NAMES[exerciseId] || exerciseId || 'Physiotherapy Exercise';
+    // Built-ins come from the static file, custom exercises from Firestore
+    const exercise =
+      defaultExercises[exerciseId] || (await getExerciseById(exerciseId).catch(() => null));
 
-    console.log(`[POST /api/verify-rep] Analyzing form for exercise: ${exerciseName} (session: ${sessionId || 'anonymous'})`);
+    const exerciseName = (exercise && exercise.displayName) || exerciseId || 'Physiotherapy Exercise';
+    const refFrame = referenceFrame || (exercise && exercise.referenceFrame) || null;
 
-    const result = await verifyExerciseForm(patientFrame, referenceFrame, exerciseName, sessionId);
+    console.log(`[POST /api/verify-rep] ${exerciseName} user=${req.user.uid} reference=${refFrame ? 'yes' : 'no'}`);
 
+    const result = await verifyExerciseForm(patientFrame, refFrame, exerciseName, req.user.uid, exercise);
     return res.json(result);
   } catch (err) {
     console.error('Error in /api/verify-rep:', err);
     return res.status(500).json({
-      correct: null,
-      issue: 'Server error during VLM verification',
-      severity: 'low',
-      source: 'error',
+      correct: null, issue: 'Server error during VLM verification', severity: 'low', source: 'error',
     });
   }
 });

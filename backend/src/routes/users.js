@@ -37,16 +37,27 @@ router.get('/me', requireAuth, async (req, res) => {
 
 /**
  * POST /api/users/profile
- * Create or sync user profile on signup or first login.
+ * Create or sync profile. The role is decided ONCE, at creation:
+ *  - existing profile  -> role is immutable here
+ *  - new profile       -> 'doctor' only if ALLOW_DOCTOR_SELF_SIGNUP=true, otherwise 'patient'
  */
 router.post('/profile', requireAuth, async (req, res) => {
   try {
     const { role, fullName } = req.body;
-    const cleanRole = role === 'doctor' ? 'doctor' : 'patient';
+    const existing = await getUserProfile(req.user.uid).catch(() => null);
+
+    let finalRole;
+    if (existing && existing.role) {
+      finalRole = existing.role;
+    } else {
+      finalRole =
+        role === 'doctor' && process.env.ALLOW_DOCTOR_SELF_SIGNUP === 'true' ? 'doctor' : 'patient';
+    }
+
     const profile = await upsertUserProfile(req.user.uid, {
       email: req.user.email,
-      role: cleanRole,
-      fullName: fullName || req.user.fullName || '',
+      role: finalRole,
+      fullName: fullName || (existing && existing.fullName) || req.user.fullName || '',
     });
     return res.json(profile);
   } catch (err) {

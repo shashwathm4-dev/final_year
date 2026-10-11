@@ -4,6 +4,10 @@
  */
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { FilesetResolver, PoseLandmarker } from '@mediapipe/tasks-vision';
+import { LandmarkSmoother } from '../utils/landmarkSmoother';
+
+// Tuning: raise minCutoff if the skeleton looks too "floaty"; raise beta if fast moves lag.
+const SMOOTHING = { minCutoff: 1.5, beta: 8, dCutoff: 1.0 };
 
 const MODEL_URL =
   'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task';
@@ -12,6 +16,8 @@ const WASM_CDN =
 
 export default function usePoseLandmarker() {
   const landmarkerRef = useRef(null);
+  const smootherRef = useRef(new LandmarkSmoother(SMOOTHING));
+  const worldSmootherRef = useRef(new LandmarkSmoother(SMOOTHING));
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -70,7 +76,7 @@ export default function usePoseLandmarker() {
    * Run pose detection on a video frame.
    * @param {HTMLVideoElement} videoEl
    * @param {number} timestamp - performance.now() value
-   * @returns {{ landmarks: Array, worldLandmarks: Array } | null}
+   * @returns {{ landmarks: Array, worldLandmarks: Array, rawLandmarks: Array } | null}
    */
   const detectForVideo = useCallback((videoEl, timestamp) => {
     if (!landmarkerRef.current || !videoEl || videoEl.readyState < 2) {
@@ -80,14 +86,18 @@ export default function usePoseLandmarker() {
     try {
       const result = landmarkerRef.current.detectForVideo(videoEl, timestamp);
       if (result && result.landmarks && result.landmarks.length > 0) {
+        const world = result.worldLandmarks && result.worldLandmarks[0];
         return {
-          landmarks: result.landmarks[0],         // First (only) person
-          worldLandmarks: result.worldLandmarks?.[0] || null,
+          landmarks: smootherRef.current.smooth(result.landmarks[0], timestamp),
+          worldLandmarks: world ? worldSmootherRef.current.smooth(world, timestamp) : null,
+          rawLandmarks: result.landmarks[0],
         };
       }
+      // No person this frame: don't smooth across the gap
+      smootherRef.current.reset();
+      worldSmootherRef.current.reset();
       return null;
     } catch (err) {
-      // Can happen transiently during rapid frame processing
       return null;
     }
   }, []);

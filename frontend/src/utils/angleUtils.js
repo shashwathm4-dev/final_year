@@ -76,27 +76,27 @@ export function threePointAngle(a, b, c) {
  * Compute neck tilt angle in degrees.
  * Measures head angle relative to shoulder baseline in pixel-aspect space.
  */
-export function computeNeckTiltAngle(leftShoulder, rightShoulder, leftEar, rightEar, nose) {
+export function computeNeckTiltAngle(leftShoulder, rightShoulder, leftEar, rightEar, nose, size = { w: 640, h: 480 }) {
   if (!leftShoulder || !rightShoulder) return 0;
 
   const shoulderAngle = Math.atan2(
-    (rightShoulder.y - leftShoulder.y) * 480,
-    (rightShoulder.x - leftShoulder.x) * 640
+    (rightShoulder.y - leftShoulder.y) * size.h,
+    (rightShoulder.x - leftShoulder.x) * size.w
   );
 
   let headAngle = null;
 
   if (leftEar && rightEar && Math.min(leftEar.visibility || 0, rightEar.visibility || 0) > 0.4) {
     headAngle = Math.atan2(
-      (rightEar.y - leftEar.y) * 480,
-      (rightEar.x - leftEar.x) * 640
+      (rightEar.y - leftEar.y) * size.h,
+      (rightEar.x - leftEar.x) * size.w
     );
   } else if (nose) {
     const shoulderMidX = (leftShoulder.x + rightShoulder.x) / 2;
     const shoulderMidY = (leftShoulder.y + rightShoulder.y) / 2;
     headAngle = Math.atan2(
-      (nose.y - shoulderMidY) * 480,
-      (nose.x - shoulderMidX) * 640
+      (nose.y - shoulderMidY) * size.h,
+      (nose.x - shoulderMidX) * size.w
     ) + Math.PI / 2;
   }
 
@@ -151,3 +151,55 @@ export function neckRotationHeuristic(nose, leftEar, rightEar) {
     direction: deviation > 0 ? 'right' : 'left',
   };
 }
+
+/**
+ * Angle (degrees, 0–180) between the vertical-down direction and the vector A -> B,
+ * in 640x480 pixel space. 0 = B directly below A (limb hanging), 90 = horizontal.
+ */
+export function verticalAngle2D(pA, pB, size = { w: 640, h: 480 }) {
+  const dx = (pB.x - pA.x) * size.w;
+  const dy = (pB.y - pA.y) * size.h;
+  return vectorAngle([0, 1], [dx, dy]);
+}
+
+/**
+ * Optional per-exercise transform so every exercise's angle STARTS LOW and RISES at the peak,
+ * which is what useRepDetection assumes.
+ *  { mode: 'supplement' }          -> 180 - raw   (e.g. elbow: 170 straight -> 10)
+ *  { mode: 'offset', offset: -80 } -> raw + offset (e.g. seated knee: 90 bent -> 10)
+ */
+export function applyAngleTransform(raw, transform) {
+  let v = raw;
+  if (transform && transform.mode === 'supplement') v = 180 - raw;
+  else if (transform && transform.mode === 'offset') v = raw + (transform.offset || 0);
+  return Math.round(Math.max(0, v) * 10) / 10;
+}
+
+/* ---------- 3D (MediaPipe world landmarks, metres) ---------- */
+
+export function vectorAngle3D(v1, v2) {
+  const dot = v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2];
+  const m1 = Math.hypot(v1[0], v1[1], v1[2]);
+  const m2 = Math.hypot(v2[0], v2[1], v2[2]);
+  if (m1 === 0 || m2 === 0) return 0;
+  const c = Math.max(-1, Math.min(1, dot / (m1 * m2)));
+  return Math.acos(c) * (180 / Math.PI);
+}
+
+/** Angle at vertex b between segments b->a and b->c. Points are {x,y,z}. */
+export function threePointAngle3D(a, b, c) {
+  return vectorAngle3D(
+    [a.x - b.x, a.y - b.y, a.z - b.z],
+    [c.x - b.x, c.y - b.y, c.z - b.z]
+  );
+}
+
+// MediaPipe world coordinates are y-DOWN, like the image. If a hanging arm reads ~180 instead
+// of ~0 in your tests, change this to [0, -1, 0].
+const WORLD_DOWN = [0, 1, 0];
+
+/** Angle between "straight down" and the vector a -> b. 0 = hanging, 90 = horizontal. */
+export function verticalAngle3D(a, b) {
+  return vectorAngle3D(WORLD_DOWN, [b.x - a.x, b.y - a.y, b.z - a.z]);
+}
+

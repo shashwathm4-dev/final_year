@@ -1,90 +1,62 @@
 /**
  * Firebase Auth verification middleware.
- * Verifies Firebase ID Token from Authorization header: Bearer <token>
- * Attaches req.user = { uid, role, email, fullName }
- * Supports custom claims, client role header hint, and stored user profile lookup.
+ * - Always verifies the Firebase ID token with the Admin SDK.
+ * - Role comes ONLY from a custom claim or the server-side profile. Never from client headers.
+ * - Unverified decoding is allowed only when ALLOW_INSECURE_DEV_AUTH=true and NODE_ENV != production.
  */
-const { admin, db } = require('../config/firebase');
+const { admin } = require('../config/firebase');
 const { getUserProfile } = require('../services/firestore');
 
+const INSECURE_DEV_AUTH =
+  process.env.ALLOW_INSECURE_DEV_AUTH === 'true' && process.env.NODE_ENV !== 'production';
+
 async function requireAuth(req, res, next) {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  const header = req.headers.authorization || '';
+  if (!header.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'Unauthorized: Missing or invalid Authorization header' });
   }
-
-  const token = authHeader.split('Bearer ')[1].trim();
+  const token = header.slice(7).trim();
   if (!token) {
     return res.status(401).json({ error: 'Unauthorized: Empty token provided' });
   }
 
-  const clientRole = req.headers['x-user-role'];
+  let decoded = null;
+  const adminReady = admin.apps && admin.apps.length > 0;
 
-  try {
-    let uid = null;
-    let email = null;
-    let role = null;
-    let fullName = null;
-
-    if (admin.apps && admin.apps.length > 0) {
-      try {
-        const decodedToken = await admin.auth().verifyIdToken(token);
-        uid = decodedToken.uid;
-        email = decodedToken.email;
-        role = decodedToken.role;
-        fullName = decodedToken.name;
-      } catch (adminErr) {
-        console.warn('[requireAuth] Admin verify failed, falling back to payload parsing:', adminErr.message);
-      }
+  if (adminReady) {
+    try {
+      decoded = await admin.auth().verifyIdToken(token);
+    } catch (err) {
+      return res.status(401).json({ error: 'Unauthorized: Invalid or expired token' });
     }
-
-    if (!uid) {
-      // Decode JWT payload directly
-      const parts = token.split('.');
-      if (parts.length === 3) {
-        const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
-        uid = payload.user_id || payload.sub || 'dev_user';
-        email = payload.email || 'dev@example.com';
-        role = payload.role;
-        fullName = payload.name;
-      } else {
-        return res.status(401).json({ error: 'Unauthorized: Malformed token' });
-      }
+  } else if (INSECURE_DEV_AUTH) {
+    try {
+      const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
+      decoded = { uid: payload.user_id || payload.sub, email: payload.email, name: payload.name };
+    } catch {
+      return res.status(401).json({ error: 'Unauthorized: Malformed token' });
     }
-
-    // Role priority:
-    // 1. Explicit claim from token
-    // 2. Client role header hint (e.g. from localStorage on doctor session)
-    // 3. Stored profile in database/store
-    // 4. Fallback 'patient'
-    if (!role && clientRole && (clientRole === 'doctor' || clientRole === 'patient')) {
-      role = clientRole;
+    if (!decoded.uid) {
+      return res.status(401).json({ error: 'Unauthorized: Token has no user id' });
     }
-
-    if (!role) {
-      try {
-        const profile = await getUserProfile(uid);
-        if (profile && profile.role) {
-          role = profile.role;
-          fullName = profile.fullName || fullName;
-        }
-      } catch (pErr) {
-        // ignore
-      }
-    }
-
-    req.user = {
-      uid,
-      email: email || '',
-      role: role || 'patient',
-      fullName: fullName || '',
-    };
-
-    return next();
-  } catch (err) {
-    console.error('[requireAuth] Token verification failed:', err.message);
-    return res.status(401).json({ error: 'Unauthorized: Invalid or expired token' });
+    console.warn('[requireAuth] INSECURE DEV AUTH: token signature NOT verified');
+  } else {
+    return res.status(503).json({
+      error: 'Auth is not configured on the server (Firebase Admin credentials missing)',
+    });
   }
+
+  // Role: custom claim first, then server-side profile, else patient.
+  let role = decoded.role === 'doctor' || decoded.role === 'patient' ? decoded.role : null;
+  let fullName = decoded.name || '';
+  if (!role) {
+    const profile = await getUserProfile(decoded.uid).catch(() => null);
+    role = profile && profile.role === 'doctor' ? 'doctor' : 'patient';
+    fullName = (profile && profile.fullName) || fullName;
+  }
+
+  req.user = { uid: decoded.uid, email: decoded.email || '', role, fullName };
+  return next();
 }
 
 module.exports = requireAuth;

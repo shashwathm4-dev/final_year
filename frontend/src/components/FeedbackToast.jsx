@@ -1,9 +1,17 @@
 /**
  * FeedbackToast — Animated slide-in toast for post-rep feedback.
  * Color-coded by verdict: green (correct), amber (minor), red (significant).
- * Shows verdict source badge: "Local Check" or "AI Verified".
+ * Shows verdict source badge: "AI Verified", "Angle check only (AI skipped)" or "Angle check failed".
  */
 import { useEffect, useState } from 'react';
+
+const SKIP_TEXT = {
+  cooldown: 'rate limit',
+  quota: 'quota reached',
+  no_api_key: 'not configured',
+  no_frame: 'no frame',
+  models_unavailable: 'AI unavailable',
+};
 
 export default function FeedbackToast({ feedback, onDismiss }) {
   const [isVisible, setIsVisible] = useState(false);
@@ -71,10 +79,21 @@ export default function FeedbackToast({ feedback, onDismiss }) {
               ? '🤖 AI Verified'
               : isError
               ? '⚡ Error'
-              : '📐 Local Check'}
+              : feedback.verdictSource === 'hold_check'
+              ? '⏱ Hold check'
+              : feedback.verdictSource === 'checkpoint_only'
+              ? `📐 Angle check only · AI skipped (${SKIP_TEXT[feedback.skipReason] || 'unavailable'})`
+              : '📐 Angle check failed'}
           </span>
         </div>
-        <p className="toast-message">{feedback.issue || 'Perfect rep — keep it up!'}</p>
+        <p className="toast-message">
+          {feedback.issue ||
+            (feedback.verdictSource === 'checkpoint_only'
+              ? 'Angles look correct (visual AI check was skipped)'
+              : feedback.verdictSource === 'hold_check'
+              ? 'Hold completed — nicely done!'
+              : 'Perfect rep — keep it up!')}
+        </p>
         {feedback.limitingFactor && feedback.limitingFactor !== 'Optimal Form' && (
           <p style={{ fontSize: '0.75rem', opacity: 0.8, marginTop: '0.25rem' }}>
             Focus area: {feedback.limitingFactor}

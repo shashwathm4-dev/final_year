@@ -19,10 +19,6 @@ api.interceptors.request.use(async (config) => {
     if (auth && auth.currentUser) {
       const token = await auth.currentUser.getIdToken();
       config.headers.Authorization = `Bearer ${token}`;
-      const cachedRole = localStorage.getItem('user_role');
-      if (cachedRole) {
-        config.headers['X-User-Role'] = cachedRole;
-      }
       if (auth.currentUser.email) {
         config.headers['X-User-Email'] = auth.currentUser.email;
       }

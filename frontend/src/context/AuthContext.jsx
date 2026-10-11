@@ -9,9 +9,8 @@ import {
   signOut as firebaseSignOut,
   onAuthStateChanged,
 } from 'firebase/auth';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { auth, db } from '../config/firebase';
-import { syncUserProfile } from '../services/api';
+import { auth } from '../config/firebase';
+import { syncUserProfile, getMyProfile } from '../services/api';
 
 const AuthContext = createContext(null);
 
@@ -49,38 +48,21 @@ export function AuthProvider({ children }) {
           // ignore localStorage error
         }
 
-        // Fetch role from Firestore users/{uid} with quick timeout
+        // Role comes from the backend profile (server is the source of truth)
         try {
-          if (db) {
-            const userDocRef = doc(db, 'users', firebaseUser.uid);
-            // 2.5s timeout for Firestore getDoc so page doesn't hang if Firestore is unconfigured or slow
-            const docPromise = getDoc(userDocRef);
-            const timeoutPromise = new Promise((_, reject) =>
-              setTimeout(() => reject(new Error('Firestore timeout')), 2500)
-            );
-            const userDoc = await Promise.race([docPromise, timeoutPromise]);
-            
-            if (userDoc && userDoc.exists()) {
-              const data = userDoc.data();
-              const userRole = data.role || localStorage.getItem('user_role') || 'patient';
-              const name = data.fullName || firebaseUser.displayName || '';
-              setRole(userRole);
-              setFullName(name);
-              localStorage.setItem('user_role', userRole);
-              localStorage.setItem('user_name', name);
-            } else {
-              const fallbackRole = localStorage.getItem('user_role') || 'patient';
-              setRole(fallbackRole);
-              setFullName(firebaseUser.displayName || '');
-            }
-          } else {
-            const fallbackRole = localStorage.getItem('user_role') || 'patient';
-            setRole(fallbackRole);
-          }
+          const profile = await Promise.race([
+            getMyProfile(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Profile timeout')), 4000)),
+          ]);
+          const userRole = profile.role === 'doctor' ? 'doctor' : 'patient';
+          const name = profile.fullName || firebaseUser.displayName || '';
+          setRole(userRole);
+          setFullName(name);
+          localStorage.setItem('user_role', userRole);   // display cache only, never sent to the server
+          localStorage.setItem('user_name', name);
         } catch (err) {
-          console.warn('Failed to fetch user role (using cached/fallback):', err.message);
-          const fallbackRole = localStorage.getItem('user_role') || 'patient';
-          setRole(fallbackRole);
+          console.warn('Could not load profile (using cached role for display only):', err.message);
+          setRole(localStorage.getItem('user_role') || 'patient');
         }
       } else {
         setUser(null);
@@ -98,45 +80,28 @@ export function AuthProvider({ children }) {
 
   const signIn = useCallback(async (email, password, expectedRole = null) => {
     if (!auth) throw new Error('Firebase Auth not initialized');
-    if (expectedRole) {
-      setRole(expectedRole);
-      localStorage.setItem('user_role', expectedRole);
-    }
     const cred = await signInWithEmailAndPassword(auth, email, password);
-    const effectiveRole = expectedRole || localStorage.getItem('user_role') || 'patient';
-    syncUserProfile({ role: effectiveRole }).catch(() => {});
+    // Make sure a profile exists, then read the REAL role from the server
+    await syncUserProfile({ role: expectedRole || 'patient' }).catch(() => {});
+    const profile = await getMyProfile();
+    if (expectedRole && profile.role !== expectedRole) {
+      await firebaseSignOut(auth);
+      throw new Error(`This account is registered as a ${profile.role}. Use the ${profile.role} login tab.`);
+    }
+    setRole(profile.role);
+    localStorage.setItem('user_role', profile.role);
     return cred.user;
   }, []);
 
   const signUp = useCallback(async (email, password, selectedRole, name) => {
     if (!auth) throw new Error('Firebase Auth not initialized');
-    const roleToSet = selectedRole || 'patient';
-    setRole(roleToSet);
-    setFullName(name || '');
-    localStorage.setItem('user_role', roleToSet);
-    if (name) localStorage.setItem('user_name', name);
-
     const cred = await createUserWithEmailAndPassword(auth, email, password);
-
-    // Create users/{uid} document in Firestore
-    if (db) {
-      try {
-        const userDocRef = doc(db, 'users', cred.user.uid);
-        await setDoc(userDocRef, {
-          email: cred.user.email,
-          role: roleToSet,
-          fullName: name || '',
-          doctorId: null,
-          createdAt: new Date().toISOString(),
-        });
-      } catch (err) {
-        console.error('Failed to create user document:', err);
-      }
-    }
-
-    // Also sync to backend persistent store
-    syncUserProfile({ role: roleToSet, fullName: name || '' }).catch(() => {});
-
+    // Backend creates users/{uid}; it decides the final role (see ALLOW_DOCTOR_SELF_SIGNUP)
+    const profile = await syncUserProfile({ role: selectedRole || 'patient', fullName: name || '' });
+    setRole(profile.role);
+    setFullName(profile.fullName || name || '');
+    localStorage.setItem('user_role', profile.role);
+    if (name) localStorage.setItem('user_name', name);
     return cred.user;
   }, []);
 

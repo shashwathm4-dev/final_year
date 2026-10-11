@@ -1493,4 +1493,50 @@
   }
 }
 
+/* Hold progress (item 7) */
+.hold-progress { position: absolute; left: 16px; right: 16px; bottom: 16px; }
+.hold-progress-label { font-weight: 700; margin-bottom: 4px; text-shadow: 0 1px 3px rgba(0,0,0,.6); }
+.hold-progress-bar { height: 10px; border-radius: 6px; background: rgba(255,255,255,.2); overflow: hidden; }
+.hold-progress-fill { height: 100%; background: #06d6a0; transition: width .1s linear; }
+
+/* Side selector (item 6) */
+.side-selector { display: inline-flex; gap: 6px; margin-right: 8px; }
+.side-btn.side-active { background: rgba(6,214,160,.2); border-color: #06d6a0; }
+
+/* Compensation banner (item 9) */
+.compensation-banner {
+  position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+  background: rgba(255,209,102,.95); color: #1b1b1b; font-weight: 700;
+  padding: 6px 14px; border-radius: 999px; z-index: 5;
+}
+
+.camera-hint { position: absolute; top: 12px; left: 12px; right: 12px; background: rgba(0,0,0,.55); color: #fff; padding: 8px 12px; border-radius: 8px; font-size: .85rem; }
+.side-badge { font-size: .8rem; opacity: .85; }
+
+/* Framing gate (item 10) */
+.framing-overlay {
+  position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%);
+  max-width: 90%; padding: 10px 16px; border-radius: 12px; z-index: 6;
+  color: #fff; font-size: .9rem; text-align: left;
+}
+.framing-overlay ul { margin: 6px 0 0; padding-left: 18px; }
+.framing-ok   { background: rgba(6,214,160,.85); color: #062b21; font-weight: 700; }
+.framing-warn { background: rgba(17,138,178,.9); }
+.framing-lost { background: rgba(214,40,40,.9); }
+.skip-gate { display: inline-flex; align-items: center; gap: 6px; font-size: .8rem; opacity: .85; margin-right: 8px; }
+
+/* Calibration (item 11) */
+.calibration-panel {
+  position: absolute; inset: 0; margin: auto; width: min(420px, 90%); height: fit-content;
+  background: rgba(15,23,42,.92); color: #fff; border-radius: 16px; padding: 20px; z-index: 8; text-align: center;
+}
+.calibration-step { font-size: .8rem; opacity: .7; }
+.calibration-timer { font-size: 2.4rem; font-weight: 800; margin: 8px 0; }
+.calibration-angle { opacity: .85; margin-bottom: 12px; }
+.calibration-note { font-size: .8rem; opacity: .85; }
+
+
+
+
+
 

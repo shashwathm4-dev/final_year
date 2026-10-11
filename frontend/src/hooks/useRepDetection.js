@@ -15,6 +15,9 @@ const STATES = {
   DESCENDING: 'DESCENDING',
 };
 
+const MIN_REP_MS = 600;          // a real rep cannot be faster than this
+const START_CONFIRM_FRAMES = 2;  // angle must stay above the start threshold for 2 frames
+
 /**
  * @param {Object} exerciseConfig - From exercises.json
  * @param {Function} onRepComplete - Callback with rep data
@@ -32,6 +35,21 @@ export default function useRepDetection(exerciseConfig, onRepComplete) {
   const peakAngleRef = useRef(0);
   const peakFrameRef = useRef(null);
   const startFrameRef = useRef(null);
+  const lastSnapTsRef = useRef(0);
+  const aboveCountRef = useRef(0);
+  const repStartTsRef = useRef(0);
+  const SNAP_MIN_GAP_MS = 120;   // at most ~8 JPEG encodes per second while tracking the peak
+
+  // Records `frame` as the current peak and (rate-limited) captures its image NOW.
+  const trackPeak = (frame) => {
+    const prev = peakFrameRef.current;
+    let url = prev ? prev.frameDataUrl : null;
+    if (typeof frame.captureFrame === 'function' && frame.timestamp - lastSnapTsRef.current >= SNAP_MIN_GAP_MS) {
+      lastSnapTsRef.current = frame.timestamp;
+      url = frame.captureFrame();
+    }
+    peakFrameRef.current = { ...frame, frameDataUrl: url };
+  };
 
   /**
    * Add a new frame of angle data. Drives the state machine.
@@ -50,14 +68,21 @@ export default function useRepDetection(exerciseConfig, onRepComplete) {
 
       switch (currentState) {
         case STATES.IDLE: {
-          // Wait for angle to exceed start threshold
           if (angle >= startAngleThreshold) {
-            stateRef.current = STATES.ASCENDING;
-            setState(STATES.ASCENDING);
-            frameBufferRef.current = [frame];
-            startFrameRef.current = frame;
-            peakAngleRef.current = angle;
-            peakFrameRef.current = frame;
+            aboveCountRef.current += 1;
+            if (aboveCountRef.current >= START_CONFIRM_FRAMES) {
+              aboveCountRef.current = 0;
+              stateRef.current = STATES.ASCENDING;
+              setState(STATES.ASCENDING);
+              frameBufferRef.current = [frame];
+              startFrameRef.current = frame;
+              repStartTsRef.current = frame.timestamp;
+              peakAngleRef.current = angle;
+              peakFrameRef.current = null;
+              trackPeak(frame);
+            }
+          } else {
+            aboveCountRef.current = 0;
           }
           break;
         }
@@ -68,7 +93,7 @@ export default function useRepDetection(exerciseConfig, onRepComplete) {
           // Track peak angle
           if (angle > peakAngleRef.current) {
             peakAngleRef.current = angle;
-            peakFrameRef.current = frame;
+            trackPeak(frame);
           }
 
           // Check if we've reached peak zone
@@ -95,7 +120,7 @@ export default function useRepDetection(exerciseConfig, onRepComplete) {
           // Track peak angle (may still be ascending slightly)
           if (angle > peakAngleRef.current) {
             peakAngleRef.current = angle;
-            peakFrameRef.current = frame;
+            trackPeak(frame);
           }
 
           // Check if descending
@@ -121,6 +146,16 @@ export default function useRepDetection(exerciseConfig, onRepComplete) {
 
           // Rep completes when angle returns below the return threshold
           if (angle <= returnAngleThreshold) {
+            if (frame.timestamp - repStartTsRef.current < MIN_REP_MS) {
+              // Too fast to be a real rep: treat it as jitter and discard
+              stateRef.current = STATES.IDLE;
+              setState(STATES.IDLE);
+              frameBufferRef.current = [];
+              peakAngleRef.current = 0;
+              peakFrameRef.current = null;
+              startFrameRef.current = null;
+              break;
+            }
             const newRepCount = repCountRef.current + 1;
             repCountRef.current = newRepCount;
             setRepCount(newRepCount);
@@ -176,6 +211,18 @@ export default function useRepDetection(exerciseConfig, onRepComplete) {
     repCountRef.current = 0;
     setRepCount(0);
     setCurrentAngle(0);
+    aboveCountRef.current = 0;
+    frameBufferRef.current = [];
+    peakAngleRef.current = 0;
+    peakFrameRef.current = null;
+    startFrameRef.current = null;
+  }, []);
+
+  /** Drop the in-progress rep but keep the rep count (used when tracking is lost). */
+  const abortCurrent = useCallback(() => {
+    stateRef.current = STATES.IDLE;
+    setState(STATES.IDLE);
+    aboveCountRef.current = 0;
     frameBufferRef.current = [];
     peakAngleRef.current = 0;
     peakFrameRef.current = null;
@@ -188,5 +235,6 @@ export default function useRepDetection(exerciseConfig, onRepComplete) {
     currentAngle,
     addFrame,
     reset,
+    abortCurrent,
   };
 }

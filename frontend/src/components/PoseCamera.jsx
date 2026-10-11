@@ -66,16 +66,17 @@ export default function PoseCamera({
 
   const captureFrameDataUrl = useCallback(() => {
     const video = videoRef.current;
-    if (!video) return null;
+    if (!video || !video.videoWidth) return null;
 
     if (!offscreenCanvasRef.current) {
       offscreenCanvasRef.current = document.createElement('canvas');
     }
     const oc = offscreenCanvasRef.current;
-    oc.width = video.videoWidth || 640;
-    oc.height = video.videoHeight || 480;
-    const octx = oc.getContext('2d');
-    octx.drawImage(video, 0, 0);
+    const MAX_W = 480;                       // keeps payloads ≈ 25–50 KB
+    const scale = Math.min(1, MAX_W / video.videoWidth);
+    oc.width = Math.round(video.videoWidth * scale);
+    oc.height = Math.round(video.videoHeight * scale);
+    oc.getContext('2d').drawImage(video, 0, 0, oc.width, oc.height);
     return oc.toDataURL('image/jpeg', 0.7);
   }, []);
 
@@ -98,22 +99,21 @@ export default function PoseCamera({
           lastTimestampRef.current = now;
 
           const result = detectForVideo(video, now);
+          const ctx = canvas.getContext('2d');
+          const frameSize = { w: video.videoWidth || 640, h: video.videoHeight || 480 };
 
           if (result && result.landmarks) {
-            const ctx = canvas.getContext('2d');
             const width = canvas.width;
             const height = canvas.height;
 
             // Highlight the exercise-relevant joints
             const highlightJoints = exerciseConfig
-              ? Object.values(exerciseConfig.landmarkIndices)
+              ? Object.values(exerciseConfig.landmarkIndices).filter((v) => Number.isInteger(v))
               : [];
 
-            drawSkeleton(ctx, result.landmarks, width, height, {
-              highlightJoints,
-            });
+            drawSkeleton(ctx, result.landmarks, width, height, { highlightJoints });
 
-            // Draw angle arc if we have the right config
+            // Draw angle arc for three-point exercises
             if (exerciseConfig && exerciseConfig.angleFunction === 'threePoint' && currentAngle) {
               const indices = Object.values(exerciseConfig.landmarkIndices);
               const lmA = getLandmark(result.landmarks, indices[0]);
@@ -122,10 +122,23 @@ export default function PoseCamera({
               drawAngleArc(ctx, lmB, lmA, lmC, currentAngle, width, height);
             }
 
-            // Emit frame data to parent
             if (onFrame) {
               onFrame({
                 landmarks: result.landmarks,
+                worldLandmarks: result.worldLandmarks || null,
+                frameSize,
+                timestamp: now,
+                captureFrame: captureFrameDataUrl,
+              });
+            }
+          } else {
+            // No person detected: clear the old skeleton and tell the parent
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (onFrame) {
+              onFrame({
+                landmarks: null,
+                worldLandmarks: null,
+                frameSize,
                 timestamp: now,
                 captureFrame: captureFrameDataUrl,
               });

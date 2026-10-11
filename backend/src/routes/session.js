@@ -1,46 +1,36 @@
 /**
- * Express routes for session & rep logging
- * - POST /api/session/start
- * - POST /api/session/log-rep
- * - POST /api/session/end
- * - GET /api/session/:id
- * - GET /api/sessions/my (and /api/session/my)
- * - GET /api/sessions/patient/:patientId
+ * Session & rep logging. Every route requires login. Writes require session ownership.
  */
 const express = require('express');
 const router = express.Router();
 const requireAuth = require('../middleware/requireAuth');
 const requireRole = require('../middleware/requireRole');
-const { createSession, logRep, endSession, getSession, getSessionsByPatient } = require('../services/firestore');
+const {
+  createSession, logRep, endSession, getSession, getSessionsByPatient, getUserProfile,
+} = require('../services/firestore');
 
-// Start session — optional auth: if authenticated, saves patientId
-router.post('/session/start', async (req, res) => {
+async function loadOwnedSession(req, res) {
+  const { sessionId } = req.body;
+  if (!sessionId) {
+    res.status(400).json({ error: 'Missing required field: sessionId' });
+    return null;
+  }
+  const session = await getSession(sessionId);
+  if (!session) {
+    res.status(404).json({ error: 'Session not found' });
+    return null;
+  }
+  if (session.patientId !== req.user.uid) {
+    res.status(403).json({ error: 'Forbidden: not your session' });
+    return null;
+  }
+  return session;
+}
+
+router.post('/session/start', requireAuth, async (req, res) => {
   try {
-    const { exerciseId } = req.body;
-    let patientId = null;
-
-    // Check if auth token provided
-    const authHeader = req.headers.authorization;
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      try {
-        const token = authHeader.split('Bearer ')[1].trim();
-        const { admin } = require('../config/firebase');
-        if (admin.apps && admin.apps.length > 0) {
-          const decoded = await admin.auth().verifyIdToken(token);
-          patientId = decoded.uid;
-        } else {
-          const parts = token.split('.');
-          if (parts.length === 3) {
-            const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
-            patientId = payload.user_id || payload.sub || null;
-          }
-        }
-      } catch (authErr) {
-        // Fall back to unauthenticated session
-      }
-    }
-
-    const sessionId = await createSession(exerciseId || 'unknown', patientId);
+    const exerciseId = typeof req.body.exerciseId === 'string' ? req.body.exerciseId : 'unknown';
+    const sessionId = await createSession(exerciseId, req.user.uid);
     res.json({ sessionId });
   } catch (err) {
     console.error('Error starting session:', err);
@@ -48,43 +38,35 @@ router.post('/session/start', async (req, res) => {
   }
 });
 
-router.post('/session/log-rep', async (req, res) => {
+router.post('/session/log-rep', requireAuth, async (req, res) => {
   try {
-    const {
-      sessionId,
-      exerciseId,
-      repNumber,
-      timestamp,
-      angles,
-      verdictSource,
-      correct,
-      issue,
-      severity,
-      tempoScore,
-      smoothnessScore,
-      romScore,
-      qualityScore,
-    } = req.body;
-
-    if (!sessionId || repNumber == null) {
-      return res.status(400).json({ error: 'Missing required fields: sessionId, repNumber' });
+    const session = await loadOwnedSession(req, res);
+    if (!session) return;
+    const b = req.body;
+    if (b.repNumber == null) {
+      return res.status(400).json({ error: 'Missing required field: repNumber' });
     }
-
-    await logRep(sessionId, {
-      exerciseId,
-      repNumber,
-      timestamp,
-      angles,
-      verdictSource,
-      correct,
-      issue,
-      severity,
-      tempoScore,
-      smoothnessScore,
-      romScore,
-      qualityScore,
+    await logRep(b.sessionId, {
+      exerciseId: b.exerciseId,
+      repNumber: b.repNumber,
+      timestamp: b.timestamp,
+      angles: b.angles,
+      verdictSource: b.verdictSource,
+      skipReason: b.skipReason,       // item 3
+      correct: b.correct,
+      issue: b.issue,
+      severity: b.severity,
+      tempoScore: b.tempoScore,
+      smoothnessScore: b.smoothnessScore,
+      romScore: b.romScore,
+      qualityScore: b.qualityScore,
+      side: b.side,
+      mode: b.mode,
+      holdSeconds: b.holdSeconds,
+      breaks: b.breaks,
+      compensations: Array.isArray(b.compensations) ? b.compensations : [],
+      calibrationScale: b.calibrationScale,
     });
-
     res.json({ success: true });
   } catch (err) {
     console.error('Error logging rep:', err);
@@ -92,15 +74,17 @@ router.post('/session/log-rep', async (req, res) => {
   }
 });
 
-// Finalize/End a session with summary statistics
-router.post('/session/end', async (req, res) => {
+router.post('/session/end', requireAuth, async (req, res) => {
   try {
-    const { sessionId, totalReps, correctReps } = req.body;
-    if (!sessionId) {
-      return res.status(400).json({ error: 'Missing required field: sessionId' });
-    }
-
-    await endSession(sessionId, { totalReps, correctReps });
+    const session = await loadOwnedSession(req, res);
+    if (!session) return;
+    // Prefer server-side counts from stored reps; fall back to client numbers.
+    const reps = Array.isArray(session.reps) ? session.reps : [];
+    const totalReps = reps.length || Math.max(0, parseInt(req.body.totalReps, 10) || 0);
+    const correctReps = reps.length
+      ? reps.filter((r) => r.correct === true).length
+      : Math.max(0, parseInt(req.body.correctReps, 10) || 0);
+    await endSession(req.body.sessionId, { totalReps, correctReps });
     res.json({ success: true });
   } catch (err) {
     console.error('Error ending session:', err);
@@ -108,7 +92,6 @@ router.post('/session/end', async (req, res) => {
   }
 });
 
-// Patient gets their own sessions
 const handleGetMySessions = async (req, res) => {
   try {
     const sessions = await getSessionsByPatient(req.user.uid);
@@ -121,9 +104,13 @@ const handleGetMySessions = async (req, res) => {
 router.get('/sessions/my', requireAuth, handleGetMySessions);
 router.get('/session/my', requireAuth, handleGetMySessions);
 
-// Doctor views specific patient's sessions
+// Doctor may only read sessions of patients linked to them
 router.get('/sessions/patient/:patientId', requireAuth, requireRole('doctor'), async (req, res) => {
   try {
+    const patient = await getUserProfile(req.params.patientId);
+    if (!patient || patient.doctorId !== req.user.uid) {
+      return res.status(403).json({ error: 'Forbidden: this patient is not assigned to you' });
+    }
     const sessions = await getSessionsByPatient(req.params.patientId);
     res.json({ sessions });
   } catch (err) {
@@ -132,11 +119,16 @@ router.get('/sessions/patient/:patientId', requireAuth, requireRole('doctor'), a
   }
 });
 
-router.get('/session/:id', async (req, res) => {
+// NOTE: keep this AFTER /session/my so "my" is not treated as an id
+router.get('/session/:id', requireAuth, async (req, res) => {
   try {
     const session = await getSession(req.params.id);
-    if (!session) {
-      return res.status(404).json({ error: 'Session not found' });
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    if (session.patientId !== req.user.uid) {
+      const patient = session.patientId ? await getUserProfile(session.patientId) : null;
+      if (!patient || patient.doctorId !== req.user.uid) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
     }
     res.json(session);
   } catch (err) {

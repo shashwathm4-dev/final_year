@@ -124,6 +124,7 @@ async function logRep(sessionId, repData) {
     timestamp: repData.timestamp || Date.now(),
     angles: repData.angles || null,
     verdictSource: repData.verdictSource || 'local',
+    skipReason: repData.skipReason || null,
     correct: repData.correct ?? null,
     issue: repData.issue || null,
     severity: repData.severity || null,
@@ -131,6 +132,12 @@ async function logRep(sessionId, repData) {
     smoothnessScore: repData.smoothnessScore ?? null,
     romScore: repData.romScore ?? null,
     qualityScore: repData.qualityScore ?? null,
+    side: repData.side || null,
+    mode: repData.mode || 'reps',
+    holdSeconds: repData.holdSeconds ?? null,
+    breaks: repData.breaks ?? null,
+    compensations: Array.isArray(repData.compensations) ? repData.compensations : [],
+    calibrationScale: repData.calibrationScale ?? null,
   };
 
   // Update local store
@@ -343,22 +350,25 @@ async function getUserProfile(uid) {
  * @returns {Promise<Object>}
  */
 async function upsertUserProfile(uid, data) {
-  const profileData = {
-    email: data.email || '',
-    role: data.role || 'patient',
-    fullName: data.fullName || '',
-    doctorId: data.doctorId || null,
+  const existingLocal = localStore.users[uid] || null;
+
+  // Fields that may change on every sync
+  const mutable = {
+    email: data.email || (existingLocal && existingLocal.email) || '',
+    fullName: data.fullName || (existingLocal && existingLocal.fullName) || '',
     updatedAt: new Date().toISOString(),
   };
-
-  // Update local store
-  const existing = localStore.users[uid] || {};
-  localStore.users[uid] = {
-    createdAt: existing.createdAt || new Date().toISOString(),
-    ...existing,
-    ...profileData,
-    uid,
+  // Fields that are fixed at creation time
+  const createOnly = {
+    role: data.role === 'doctor' ? 'doctor' : 'patient',
+    doctorId: data.doctorId || null,
+    createdAt: new Date().toISOString(),
   };
+
+  // Local store: keep existing role / doctorId if the user already exists
+  localStore.users[uid] = existingLocal
+    ? { ...existingLocal, ...mutable, uid }
+    : { ...createOnly, ...mutable, uid };
   persistLocalStore();
 
   if (!db) {
@@ -370,17 +380,17 @@ async function upsertUserProfile(uid, data) {
       const userRef = doc(db, 'users', uid);
       const snap = await getDoc(userRef);
       if (snap.exists()) {
-        await updateDoc(userRef, profileData);
+        await updateDoc(userRef, mutable);
       } else {
-        await setDoc(userRef, { ...profileData, createdAt: new Date().toISOString() });
+        await setDoc(userRef, { ...createOnly, ...mutable });
       }
     } else {
       const userRef = db.collection('users').doc(uid);
       const snap = await userRef.get();
       if (snap.exists) {
-        await userRef.update(profileData);
+        await userRef.update(mutable);
       } else {
-        await userRef.set({ ...profileData, createdAt: new Date().toISOString() });
+        await userRef.set({ ...createOnly, ...mutable });
       }
     }
   } catch (err) {

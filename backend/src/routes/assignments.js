@@ -11,6 +11,7 @@ const {
   getAssignedExercises,
   getAssignmentsByDoctor,
   assignExercise,
+  getUserProfile,
 } = require('../services/firestore');
 
 router.get('/', requireAuth, async (req, res) => {
@@ -42,6 +43,11 @@ router.post('/', requireAuth, requireRole('doctor'), async (req, res) => {
 
     if (!patientId || !exerciseId) {
       return res.status(400).json({ error: 'Missing required fields: patientId, exerciseId' });
+    }
+
+    const patient = await getUserProfile(patientId);
+    if (!patient || patient.doctorId !== req.user.uid) {
+      return res.status(403).json({ error: 'Forbidden: this patient is not assigned to you' });
     }
 
     const assigned = await assignExercise({

@@ -5,7 +5,9 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 require('dotenv').config();
 
-const MODEL_NAMES = ['gemini-2.5-flash', 'gemini-1.5-flash'];
+const MODEL_NAMES = (process.env.GEMINI_MODELS || 'gemini-2.5-flash,gemini-2.0-flash')
+  .split(',')
+  .map((s) => s.trim());
 
 const lastVlmCallBySession = new Map();
 const VLM_COOLDOWN_MS = Number(process.env.VLM_COOLDOWN_MS) || 8000;
@@ -178,4 +180,4 @@ Return raw JSON ONLY:
   return skipped('models_unavailable', 'AI visual check temporarily unavailable');
 }
 
-module.exports = { verifyExerciseForm };
+module.exports = { verifyExerciseForm, MODEL_NAMES };

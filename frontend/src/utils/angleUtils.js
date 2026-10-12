@@ -3,6 +3,16 @@
  * All angles are returned in degrees.
  */
 
+// Video frame size used to convert normalised landmarks into pixel space.
+// PoseCamera updates this from the real video so portrait phone cameras measure correctly.
+export const frameSize = { w: 640, h: 480 };
+export function setFrameSize(w, h) {
+  if (w > 0 && h > 0) {
+    frameSize.w = w;
+    frameSize.h = h;
+  }
+}
+
 /**
  * Compute the angle between two 2D vectors (in degrees).
  * @param {[number, number]} v1 - First vector [x, y]
@@ -39,16 +49,16 @@ export function computeShoulderAbductionAngle(landmarks) {
   // Convert 0..1 normalized coordinates into pixel-space (aspect ratio corrected 640x480)
   let leftAngle = 0, leftConf = 0;
   if (leftShoulder && leftElbow) {
-    const dx = (leftElbow.x - leftShoulder.x) * 640;
-    const dy = (leftElbow.y - leftShoulder.y) * 480;
+    const dx = (leftElbow.x - leftShoulder.x) * frameSize.w;
+    const dy = (leftElbow.y - leftShoulder.y) * frameSize.h;
     leftAngle = vectorAngle([0, 1], [dx, dy]);
     leftConf = Math.min(leftShoulder.visibility || 0, leftElbow.visibility || 0);
   }
 
   let rightAngle = 0, rightConf = 0;
   if (rightShoulder && rightElbow) {
-    const dx = (rightElbow.x - rightShoulder.x) * 640;
-    const dy = (rightElbow.y - rightShoulder.y) * 480;
+    const dx = (rightElbow.x - rightShoulder.x) * frameSize.w;
+    const dy = (rightElbow.y - rightShoulder.y) * frameSize.h;
     rightAngle = vectorAngle([0, 1], [dx, dy]);
     rightConf = Math.min(rightShoulder.visibility || 0, rightElbow.visibility || 0);
   }
@@ -76,7 +86,7 @@ export function threePointAngle(a, b, c) {
  * Compute neck tilt angle in degrees.
  * Measures head angle relative to shoulder baseline in pixel-aspect space.
  */
-export function computeNeckTiltAngle(leftShoulder, rightShoulder, leftEar, rightEar, nose, size = { w: 640, h: 480 }) {
+export function computeNeckTiltAngle(leftShoulder, rightShoulder, leftEar, rightEar, nose, size = frameSize) {
   if (!leftShoulder || !rightShoulder) return 0;
 
   const shoulderAngle = Math.atan2(

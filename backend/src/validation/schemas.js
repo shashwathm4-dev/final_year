@@ -1,0 +1,111 @@
+/**
+ * Zod schemas for every request body that writes data.
+ * Unknown keys are stripped (Zod default), so extra fields never reach the database.
+ */
+const { z } = require('zod');
+
+const id = z.string().trim().min(1).max(100).regex(/^[A-Za-z0-9_.:-]+$/, 'Invalid id format');
+
+// Raw base64 or a data URL (jpeg/png/webp). ~4 MB max.
+const imageData = z
+  .string()
+  .min(20)
+  .max(4_000_000)
+  .regex(/^(data:image\/(jpeg|jpg|png|webp);base64,)?[A-Za-z0-9+/=]+$/, 'Invalid image data');
+
+const score = z.number().min(0).max(100).nullish();
+const count = z.number().int().min(0).max(10000);
+
+const verifyRepSchema = z.object({
+  patientFrame: imageData,
+  referenceFrame: imageData.nullish(),
+  exerciseId: id.optional(),
+  sessionId: id.nullish(),
+});
+
+const sessionStartSchema = z.object({
+  exerciseId: id.optional(),
+});
+
+const logRepSchema = z.object({
+  sessionId: id,
+  exerciseId: id.optional(),
+  repNumber: count,
+  timestamp: z.number().optional(),
+  angles: z.array(z.number().finite()).max(10).nullish(),
+  verdictSource: z.enum(['local', 'vlm', 'error']).optional(),
+  correct: z.boolean().nullish(),
+  issue: z.string().max(300).nullish(),
+  severity: z.enum(['low', 'medium', 'high']).nullish(),
+  tempoScore: score,
+  smoothnessScore: score,
+  romScore: score,
+  qualityScore: score,
+});
+
+const sessionEndSchema = z.object({
+  sessionId: id,
+  totalReps: count.optional(),
+  correctReps: count.optional(),
+});
+
+const addPatientSchema = z.object({
+  email: z.string().trim().toLowerCase().email().max(200),
+});
+
+const profileSchema = z.object({
+  role: z.enum(['doctor', 'patient']).optional(),
+  fullName: z.string().trim().max(100).optional(),
+});
+
+const assignmentSchema = z.object({
+  patientId: id,
+  patientEmail: z.string().max(200).optional(),
+  exerciseId: id,
+  exerciseName: z.string().max(120).optional(),
+  targetReps: z.coerce.number().int().min(1).max(100).optional(),
+  targetSets: z.coerce.number().int().min(1).max(20).optional(),
+  notes: z.string().max(500).optional(),
+});
+
+const angleNum = z.number().min(0).max(360);
+
+const exerciseSchema = z.object({
+  id: id.optional(),
+  displayName: z.string().trim().min(1).max(80),
+  description: z.string().max(500).optional(),
+  icon: z.string().max(8).optional(),
+  joints: z.array(z.string().max(40)).min(1).max(6),
+  landmarkIndices: z.record(z.string().max(40), z.number().int().min(0).max(32)).optional(),
+  angleFunction: z.enum(['threePoint', 'lineToLine', 'rotation']).optional(),
+  target_angle_range: z.tuple([angleNum, angleNum]),
+  startAngleThreshold: angleNum.optional(),
+  peakAngleThreshold: angleNum.optional(),
+  returnAngleThreshold: angleNum.optional(),
+  checkpoint_thresholds: z.array(angleNum).length(5).optional(),
+  referenceCheckpoints: z.array(angleNum).length(5).optional(),
+  note: z.string().max(300).optional(),
+});
+
+const consentSchema = z.object({
+  accepted: z.boolean(),
+  cloudAi: z.boolean(),
+  version: z.string().max(20),
+});
+
+const deleteAccountSchema = z.object({
+  confirm: z.literal('DELETE'),
+});
+
+module.exports = {
+  verifyRepSchema,
+  sessionStartSchema,
+  logRepSchema,
+  sessionEndSchema,
+  addPatientSchema,
+  profileSchema,
+  assignmentSchema,
+  exerciseSchema,
+  consentSchema,
+  deleteAccountSchema,
+};

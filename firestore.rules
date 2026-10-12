@@ -48,5 +48,17 @@ service cloud.firestore {
       );
       allow write: if false;
     }
+
+    // Session comments (Item 24): readable by session owner or assigned doctor. Writes via backend.
+    match /sessionComments/{commentId} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+
+    // Playback data (Item 23): same access as the parent session. Writes via backend.
+    match /playback/{docId} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
   }
 }

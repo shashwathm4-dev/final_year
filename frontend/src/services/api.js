@@ -2,8 +2,15 @@
  * API service — frontend wrapper for backend calls.
  */
 import axios from 'axios';
-
 import { auth } from '../config/firebase';
+import {
+  enqueue,
+  peekQueue,
+  dropFirst,
+  readSessionMap,
+  writeSessionMap,
+  isNetworkError,
+} from './offlineQueue';
 
 const api = axios.create({
   baseURL: '/api',
@@ -94,6 +101,118 @@ export async function assignExerciseToPatient(data) {
 }
 
 /**
+ * Program endpoints (item 25)
+ */
+export async function getPrograms() {
+  try {
+    const res = await api.get('/programs');
+    return res.data.programs || [];
+  } catch (err) {
+    console.warn('Failed to fetch programs:', err.message);
+    return [];
+  }
+}
+
+export async function createProgram(data) {
+  const res = await api.post('/programs', data);
+  return res.data;
+}
+
+export async function deleteProgram(id) {
+  const res = await api.delete(`/programs/${id}`);
+  return res.data;
+}
+
+export async function assignProgramToPatient(programId, patientId) {
+  const res = await api.post(`/programs/${programId}/assign`, { patientId });
+  return res.data;
+}
+
+export async function getMyPrograms() {
+  try {
+    const res = await api.get('/programs/my');
+    return res.data.programs || [];
+  } catch (err) {
+    console.warn('Failed to fetch my programs:', err.message);
+    return [];
+  }
+}
+
+export async function getPatientPrograms(patientId) {
+  try {
+    const res = await api.get(`/programs/patient/${patientId}`);
+    return res.data.programs || [];
+  } catch (err) {
+    console.warn('Failed to fetch patient programs:', err.message);
+    return [];
+  }
+}
+
+/**
+ * Clinic endpoints (item 27)
+ */
+export async function getMyClinic() {
+  try {
+    const res = await api.get('/clinics/me');
+    return res.data;
+  } catch (err) {
+    console.warn('Failed to fetch clinic:', err.message);
+    return { clinic: null };
+  }
+}
+
+export async function createClinic(name) {
+  const res = await api.post('/clinics', { name });
+  return res.data;
+}
+
+export async function joinClinic(inviteCode) {
+  const res = await api.post('/clinics/join', { inviteCode });
+  return res.data;
+}
+
+export async function leaveClinic() {
+  const res = await api.post('/clinics/leave');
+  return res.data;
+}
+
+export async function regenerateInviteCode() {
+  const res = await api.post('/clinics/invite-code');
+  return res.data;
+}
+
+export async function removeClinicMember(doctorId) {
+  const res = await api.delete(`/clinics/members/${doctorId}`);
+  return res.data;
+}
+
+export async function reassignPatient(patientId, doctorId) {
+  const res = await api.post('/clinics/reassign', { patientId, doctorId });
+  return res.data;
+}
+
+export async function getClinicPatients() {
+  const res = await api.get('/users/patients', { params: { scope: 'clinic' } });
+  return res.data.patients || [];
+}
+
+/**
+ * PDF report download (item 26). Pass a patientId for the doctor view; omit it for the patient's own report.
+ */
+export async function downloadProgressReport(patientId = null, days = 30) {
+  const url = patientId ? `/reports/patient/${patientId}` : '/reports/me';
+  const res = await api.get(url, { params: { days }, responseType: 'blob', timeout: 30000 });
+  const blobUrl = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+  const a = document.createElement('a');
+  a.href = blobUrl;
+  a.download = `progress-report-${new Date().toISOString().slice(0, 10)}.pdf`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(blobUrl);
+}
+
+/**
  * Session history endpoints
  */
 export async function getMySessions() {
@@ -120,44 +239,100 @@ export async function getPatientSessions(patientId) {
 /**
  * Start a new exercise session.
  * @param {string} exerciseId
+ * @param {Object} extra
  * @returns {Promise<{ sessionId: string }>}
  */
 export async function startSession(exerciseId) {
+  const makeLocalSession = () => {
+    const localId = `local_${Date.now()}`;
+    enqueue({ type: 'start', localId, exerciseId });
+    return { sessionId: localId };
+  };
+
+  if (!navigator.onLine) return makeLocalSession();
+
   try {
     const res = await api.post('/session/start', { exerciseId });
     return res.data;
   } catch (err) {
-    console.warn('Failed to start session on backend — running in offline mode', err.message);
-    // Generate a local session ID so the app still works without backend
+    console.warn('Failed to start session on backend — running offline', err.message);
+    if (isNetworkError(err)) return makeLocalSession();
     return { sessionId: `local_${Date.now()}` };
   }
 }
 
-/**
- * Log a completed rep.
- * @param {Object} repData - { sessionId, exerciseId, repNumber, timestamp, angles, verdictSource, correct, issue }
- */
 export async function logRep(repData) {
+  const isLocalSession = String(repData.sessionId || '').startsWith('local_');
+  if (isLocalSession || !navigator.onLine) {
+    enqueue({ type: 'rep', payload: repData });
+    return;
+  }
   try {
     await api.post('/session/log-rep', repData);
   } catch (err) {
-    console.warn('Failed to log rep — data not persisted:', err.message);
+    console.warn('Failed to log rep:', err.message);
+    if (isNetworkError(err)) enqueue({ type: 'rep', payload: repData });
   }
 }
 
-/**
- * End or finalize an active session with completed stats.
- * @param {{ sessionId: string, totalReps: number, correctReps: number }} sessionData
- */
 export async function endSession(sessionData) {
+  const isLocalSession = String(sessionData.sessionId || '').startsWith('local_');
+  if (isLocalSession || !navigator.onLine) {
+    enqueue({ type: 'end', payload: sessionData });
+    return { success: false, queued: true };
+  }
   try {
     const res = await api.post('/session/end', sessionData);
     return res.data;
   } catch (err) {
     console.warn('Failed to end session on backend:', err.message);
+    if (isNetworkError(err)) {
+      enqueue({ type: 'end', payload: sessionData });
+      return { success: false, queued: true };
+    }
     return { success: false };
   }
 }
+
+/**
+ * Replay queued offline requests in order. Safe to call repeatedly.
+ * Stops at the first network failure; drops items the server rejects (4xx).
+ */
+let flushing = false;
+export async function flushOfflineQueue() {
+  if (flushing || !navigator.onLine || !auth || !auth.currentUser) return;
+  flushing = true;
+  try {
+    const map = readSessionMap();
+    while (peekQueue().length > 0) {
+      const item = peekQueue()[0];
+      try {
+        if (item.type === 'start') {
+          const res = await api.post('/session/start', { exerciseId: item.exerciseId });
+          map[item.localId] = res.data.sessionId;
+          writeSessionMap(map);
+        } else {
+          const payload = { ...item.payload };
+          const realId = map[payload.sessionId] || payload.sessionId;
+          if (String(realId).startsWith('local_')) {
+            dropFirst(); // its session was never created — nothing to attach it to
+            continue;
+          }
+          payload.sessionId = realId;
+          if (item.type === 'rep') await api.post('/session/log-rep', payload);
+          else if (item.type === 'end') await api.post('/session/end', payload);
+        }
+        dropFirst();
+      } catch (err) {
+        if (isNetworkError(err)) break; // still offline — try again later
+        dropFirst(); // server rejected this item; do not retry forever
+      }
+    }
+  } finally {
+    flushing = false;
+  }
+}
+
 
 /**
  * Send a rep's peak frame to the backend for Gemini VLM verification.
@@ -169,6 +344,14 @@ export async function verifyRep(payload) {
     const res = await api.post('/verify-rep', payload, { timeout: 30000 });
     return res.data;
   } catch (err) {
+    if (err.response?.status === 429) {
+      return {
+        correct: null,
+        issue: 'AI check skipped (rate limit)',
+        severity: 'low',
+        source: 'error',
+      };
+    }
     console.warn('VLM verification failed:', err.message);
     return {
       correct: null,
@@ -204,5 +387,145 @@ export async function healthCheck() {
   } catch {
     return { status: 'unreachable' };
   }
+}
+
+/**
+ * Doctor features: adherence, trends, playback, comments
+ */
+export async function getAdherence() {
+  const res = await api.get('/analytics/adherence');
+  return res.data;
+}
+
+export async function getPatientTrends(patientId) {
+  const res = await api.get(`/analytics/patient/${patientId}/trends`);
+  return res.data;
+}
+
+export async function logRepPlayback(sessionId, repNumber, payload) {
+  try {
+    await api.post(`/session/${sessionId}/playback/${repNumber}`, payload, { timeout: 15000 });
+  } catch (err) {
+    console.warn('Failed to store playback:', err.message);
+  }
+}
+
+export async function getRepPlayback(sessionId, repNumber) {
+  const res = await api.get(`/session/${sessionId}/playback/${repNumber}`, { timeout: 15000 });
+  return res.data;
+}
+
+export async function getSessionComments(sessionId) {
+  const res = await api.get(`/comments/session/${sessionId}`);
+  return res.data.comments || [];
+}
+
+export async function postSessionComment(sessionId, text, repNumber = null) {
+  const res = await api.post(`/comments/session/${sessionId}`, { text, repNumber });
+  return res.data.comment;
+}
+
+export async function markCommentsRead(sessionId) {
+  await api.post(`/comments/session/${sessionId}/read`);
+}
+
+export async function getUnreadComments() {
+  try {
+    const res = await api.get('/comments/unread');
+    return res.data;
+  } catch {
+    return { total: 0, bySession: {} };
+  }
+}
+
+/**
+ * 28 – Gemini Coaching Summary
+ */
+export async function getCoachingSummary(sessionId, refresh = false) {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    return null;
+  }
+  try {
+    const res = await api.post(`/session/${sessionId}/coaching${refresh ? '?refresh=1' : ''}`, {}, { timeout: 30000 });
+    return res.data;
+  } catch (err) {
+    console.warn('Failed to get coaching summary:', err.message);
+    return null;
+  }
+}
+
+/**
+ * 29 – Personalized Difficulty
+ */
+export async function getPersonalization(exerciseId) {
+  try {
+    const res = await api.get(`/insights/personalization/${exerciseId}`);
+    return res.data;
+  } catch (err) {
+    console.warn('Failed to get personalization:', err.message);
+    return null;
+  }
+}
+
+/**
+ * 30 – Risk & Trend Screening
+ */
+export async function getMyRisk() {
+  try {
+    const res = await api.get('/insights/risk/me');
+    return res.data;
+  } catch (err) {
+    console.warn('Failed to get my risk:', err.message);
+    return { results: [] };
+  }
+}
+
+export async function getPatientRisk(patientId) {
+  try {
+    const res = await api.get(`/insights/risk/patient/${patientId}`);
+    return res.data;
+  } catch (err) {
+    console.warn('Failed to get patient risk:', err.message);
+    return { results: [] };
+  }
+}
+
+/**
+ * 31 – On-device Rep Classifier Models
+ */
+export async function getRepModel(exerciseId) {
+  try {
+    const res = await api.get(`/models/rep-classifier/${exerciseId}`);
+    return res.data;
+  } catch (err) {
+    return null;
+  }
+}
+
+export async function trainRepModel(exerciseId) {
+  const res = await api.post(`/models/rep-classifier/${exerciseId}/train`);
+  return res.data;
+}
+
+/**
+ * Privacy endpoints (item 36)
+ */
+export async function fetchConsent() {
+  try {
+    const res = await api.get('/privacy/consent');
+    return res.data.consent || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveConsent(consent) {
+  const res = await api.post('/privacy/consent', consent);
+  return res.data;
+}
+
+export async function deleteMyAccount() {
+  const res = await api.delete('/privacy/my-data', { data: { confirm: 'DELETE' } });
+  return res.data;
 }
 

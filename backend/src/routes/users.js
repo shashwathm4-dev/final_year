@@ -5,11 +5,16 @@ const express = require('express');
 const router = express.Router();
 const requireAuth = require('../middleware/requireAuth');
 const requireRole = require('../middleware/requireRole');
+const validate = require('../middleware/validate');
+const { writeLimiter } = require('../middleware/rateLimits');
+const { profileSchema, addPatientSchema } = require('../validation/schemas');
 const {
   getUserProfile,
   upsertUserProfile,
   assignPatientToDoctor,
   getPatientsForDoctor,
+  getClinicById,
+  getPatientsForClinic,
 } = require('../services/firestore');
 
 /**
@@ -41,7 +46,7 @@ router.get('/me', requireAuth, async (req, res) => {
  *  - existing profile  -> role is immutable here
  *  - new profile       -> 'doctor' only if ALLOW_DOCTOR_SELF_SIGNUP=true, otherwise 'patient'
  */
-router.post('/profile', requireAuth, async (req, res) => {
+router.post('/profile', requireAuth, writeLimiter, validate(profileSchema), async (req, res) => {
   try {
     const { role, fullName } = req.body;
     const existing = await getUserProfile(req.user.uid).catch(() => null);
@@ -70,7 +75,7 @@ router.post('/profile', requireAuth, async (req, res) => {
  * POST /api/users/add-patient
  * Doctor-only endpoint to link a patient by email.
  */
-router.post('/add-patient', requireAuth, requireRole('doctor'), async (req, res) => {
+router.post('/add-patient', requireAuth, requireRole('doctor'), writeLimiter, validate(addPatientSchema), async (req, res) => {
   try {
     const { email } = req.body;
     if (!email) {
@@ -95,6 +100,17 @@ router.post('/add-patient', requireAuth, requireRole('doctor'), async (req, res)
  */
 router.get('/patients', requireAuth, requireRole('doctor'), async (req, res) => {
   try {
+    // ?scope=clinic returns every patient of every doctor in the caller's clinic
+    if (req.query.scope === 'clinic') {
+      const profile = await getUserProfile(req.user.uid);
+      if (profile && profile.clinicId) {
+        const clinic = await getClinicById(profile.clinicId);
+        if (clinic) {
+          const patients = await getPatientsForClinic(clinic);
+          return res.json({ patients });
+        }
+      }
+    }
     const patients = await getPatientsForDoctor(req.user.uid);
     return res.json({ patients });
   } catch (err) {

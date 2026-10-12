@@ -43,10 +43,23 @@ function loadLocalStore() {
     sessions: {},
     exercises: {},
     assignedExercises: {},
+    sessionComments: {},
+    playback: {},
+    personalization: {},
+    models: {},
   };
 }
 
 const localStore = loadLocalStore();
+// Ensure collections added after the first release exist in older store.json files
+['programs', 'patientPrograms', 'clinics', 'personalization', 'models'].forEach((name) => {
+  if (!localStore[name]) localStore[name] = {};
+});
+localStore.personalization ||= {};
+localStore.models ||= {};
+// Backfill collections added after initial release
+if (!localStore.sessionComments) localStore.sessionComments = {};
+if (!localStore.playback) localStore.playback = {};
 
 function persistLocalStore() {
   try {
@@ -68,6 +81,87 @@ function handleFirestoreError(actionName, err) {
 }
 
 // -------------------------------------------------------------
+// Generic Collection Helpers (Items 21-24)
+// -------------------------------------------------------------
+
+function localCol(colName) {
+  if (!localStore[colName]) localStore[colName] = {};
+  return localStore[colName];
+}
+
+async function getDocById(colName, docId) {
+  if (db) {
+    try {
+      if (isClientSdk) {
+        const ref = doc(db, colName, docId);
+        const snap = await getDoc(ref);
+        if (snap.exists()) return { id: snap.id, ...snap.data() };
+      } else {
+        const snap = await db.collection(colName).doc(docId).get();
+        if (snap.exists) return { id: snap.id, ...snap.data() };
+      }
+    } catch (err) { handleFirestoreError(`getDocById(${colName})`, err); }
+  }
+  return localCol(colName)[docId] || null;
+}
+
+async function putDoc(colName, docId, data) {
+  localCol(colName)[docId] = { ...data, id: docId };
+  persistLocalStore();
+  if (!db) return;
+  try {
+    if (isClientSdk) {
+      await setDoc(doc(db, colName, docId), data);
+    } else {
+      await db.collection(colName).doc(docId).set(data);
+    }
+  } catch (err) { handleFirestoreError(`putDoc(${colName})`, err); }
+}
+
+async function queryDocs(colName, field, op, value) {
+  if (db) {
+    try {
+      if (isClientSdk) {
+        const ref = collection(db, colName);
+        const q = query(ref, where(field, op, value));
+        const snap = await getDocs(q);
+        if (!snap.empty) return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      } else {
+        const snap = await db.collection(colName).where(field, op, value).get();
+        if (!snap.empty) return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      }
+    } catch (err) { handleFirestoreError(`queryDocs(${colName})`, err); }
+  }
+  // Fallback to local
+  const col = localCol(colName);
+  return Object.values(col).filter(item => {
+    const v = item[field];
+    if (op === '==') return v === value;
+    if (op === '>=') return v >= value;
+    if (op === '<=') return v <= value;
+    if (op === '!=') return v !== value;
+    return false;
+  });
+}
+
+async function patchSession(sessionId, patch) {
+  const session = localStore.sessions[sessionId];
+  if (session) {
+    Object.assign(session, patch);
+    persistLocalStore();
+  }
+  if (!db) return;
+  try {
+    if (isClientSdk) {
+      const ref = doc(db, 'sessions', sessionId);
+      await updateDoc(ref, patch);
+    } else {
+      await db.collection('sessions').doc(sessionId).update(patch);
+    }
+  } catch (err) { handleFirestoreError('patchSession', err); }
+}
+
+// -------------------------------------------------------------
 // Sessions & Reps
 // -------------------------------------------------------------
 
@@ -77,17 +171,26 @@ function handleFirestoreError(actionName, err) {
  * @param {string|null} patientId
  * @returns {Promise<string>} Session ID
  */
-async function createSession(exerciseId, patientId = null) {
+async function createSession(exerciseId, patientId = null, opts = {}) {
+  if (opts.clientSessionId) {
+    const existing = Object.values(localStore.sessions).find(
+      (s) => s.clientSessionId === opts.clientSessionId && s.patientId === (patientId || null)
+    );
+    if (existing) return existing.sessionId;
+  }
+
   const sessionId = `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const sessionData = {
     sessionId,
     exerciseId,
     patientId: patientId || null,
-    startedAt: new Date().toISOString(),
+    clientSessionId: opts.clientSessionId || null,
+    startedAt: opts.startedAt || new Date().toISOString(),
     status: 'active',
     totalReps: 0,
     correctReps: 0,
     reps: [],
+    ...(opts.difficulty ? { difficulty: opts.difficulty } : {}),
   };
 
   // Always save to local store as baseline
@@ -138,6 +241,13 @@ async function logRep(sessionId, repData) {
     breaks: repData.breaks ?? null,
     compensations: Array.isArray(repData.compensations) ? repData.compensations : [],
     calibrationScale: repData.calibrationScale ?? null,
+    peakAngle: repData.peakAngle ?? null,
+    durationMs: repData.durationMs ?? null,
+    curve: Array.isArray(repData.curve) ? repData.curve : null,
+    modelProb: typeof repData.modelProb === 'number' ? repData.modelProb : null,
+    checkpointDeltas: repData.checkpointDeltas || null,
+    failedCheckpoints: repData.failedCheckpoints || null,
+    hasPlayback: repData.hasPlayback ?? false,
   };
 
   // Update local store
@@ -156,14 +266,18 @@ async function logRep(sessionId, repData) {
     localStore.sessions[sessionId] = session;
   }
 
-  session.totalReps = (session.totalReps || 0) + 1;
-  if (repData.correct === true) {
-    session.correctReps = (session.correctReps || 0) + 1;
+  if (!session.reps) session.reps = [];
+  const existingIdx = session.reps.findIndex((r) => r.repNumber === repData.repNumber);
+  if (existingIdx >= 0) {
+    session.reps[existingIdx] = repPayload; // replay: overwrite, don't double count
+  } else {
+    session.reps.push(repPayload);
+    session.totalReps = (session.totalReps || 0) + 1;
+    if (repData.correct === true) session.correctReps = (session.correctReps || 0) + 1;
   }
   session.lastRepAt = new Date().toISOString();
-  if (!session.reps) session.reps = [];
-  session.reps.push(repPayload);
   persistLocalStore();
+  const isReplay = existingIdx >= 0;
 
   if (!db) return;
 
@@ -172,12 +286,14 @@ async function logRep(sessionId, repData) {
       const repRef = doc(db, 'sessions', sessionId, 'reps', `rep_${repData.repNumber}`);
       await setDoc(repRef, repPayload);
 
-      const sessionRef = doc(db, 'sessions', sessionId);
-      await updateDoc(sessionRef, {
-        totalReps: increment(1),
-        ...(repData.correct === true ? { correctReps: increment(1) } : {}),
-        lastRepAt: new Date().toISOString(),
-      });
+      if (!isReplay) {
+        const sessionRef = doc(db, 'sessions', sessionId);
+        await updateDoc(sessionRef, {
+          totalReps: increment(1),
+          ...(repData.correct === true ? { correctReps: increment(1) } : {}),
+          lastRepAt: new Date().toISOString(),
+        });
+      }
     } else {
       const repRef = db
         .collection('sessions')
@@ -186,13 +302,15 @@ async function logRep(sessionId, repData) {
         .doc(`rep_${repData.repNumber}`);
       await repRef.set(repPayload);
 
-      const sessionRef = db.collection('sessions').doc(sessionId);
-      const { FieldValue } = require('firebase-admin/firestore');
-      await sessionRef.update({
-        totalReps: FieldValue.increment(1),
-        ...(repData.correct === true ? { correctReps: FieldValue.increment(1) } : {}),
-        lastRepAt: new Date().toISOString(),
-      });
+      if (!isReplay) {
+        const sessionRef = db.collection('sessions').doc(sessionId);
+        const { FieldValue } = require('firebase-admin/firestore');
+        await sessionRef.update({
+          totalReps: FieldValue.increment(1),
+          ...(repData.correct === true ? { correctReps: FieldValue.increment(1) } : {}),
+          lastRepAt: new Date().toISOString(),
+        });
+      }
     }
   } catch (err) {
     handleFirestoreError('logRep', err);
@@ -206,11 +324,34 @@ async function logRep(sessionId, repData) {
  */
 async function endSession(sessionId, finalStats = {}) {
   const session = localStore.sessions[sessionId];
+  const endedAt = new Date().toISOString();
+  const patch = {
+    status: 'completed',
+    endedAt,
+  };
+  if (finalStats.totalReps != null) patch.totalReps = finalStats.totalReps;
+  if (finalStats.correctReps != null) patch.correctReps = finalStats.correctReps;
+  if (finalStats.summary) patch.summary = finalStats.summary;
+
+  // Compute summary for analytics if not supplied
+  if (session && !patch.summary) {
+    const reps = Array.isArray(session.reps) ? session.reps : [];
+    const total = patch.totalReps ?? reps.length;
+    const correct = patch.correctReps ?? reps.filter((r) => r.correct === true).length;
+    const started = session.startedAt ? new Date(session.startedAt).getTime() : Date.now();
+    patch.durationSec = Math.round((Date.now() - started) / 1000);
+    patch.summary = {
+      accuracy: total > 0 ? Math.round((correct / total) * 100) : 0,
+      avgQuality: reps.length > 0 ? Math.round(reps.reduce((s, r) => s + (r.qualityScore || 0), 0) / reps.length) : 0,
+      issues: normalizeIssues(reps),
+    };
+  } else if (session) {
+    const started = session.startedAt ? new Date(session.startedAt).getTime() : Date.now();
+    patch.durationSec = Math.round((Date.now() - started) / 1000);
+  }
+
   if (session) {
-    session.status = 'completed';
-    session.endedAt = new Date().toISOString();
-    if (finalStats.totalReps != null) session.totalReps = finalStats.totalReps;
-    if (finalStats.correctReps != null) session.correctReps = finalStats.correctReps;
+    Object.assign(session, patch);
     persistLocalStore();
   }
 
@@ -219,24 +360,31 @@ async function endSession(sessionId, finalStats = {}) {
   try {
     if (isClientSdk) {
       const sessionRef = doc(db, 'sessions', sessionId);
-      await updateDoc(sessionRef, {
-        status: 'completed',
-        endedAt: new Date().toISOString(),
-        ...(finalStats.totalReps != null ? { totalReps: finalStats.totalReps } : {}),
-        ...(finalStats.correctReps != null ? { correctReps: finalStats.correctReps } : {}),
-      });
+      await updateDoc(sessionRef, patch);
     } else {
       const sessionRef = db.collection('sessions').doc(sessionId);
-      await sessionRef.update({
-        status: 'completed',
-        endedAt: new Date().toISOString(),
-        ...(finalStats.totalReps != null ? { totalReps: finalStats.totalReps } : {}),
-        ...(finalStats.correctReps != null ? { correctReps: finalStats.correctReps } : {}),
-      });
+      await sessionRef.update(patch);
     }
   } catch (err) {
     handleFirestoreError('endSession', err);
   }
+}
+
+/** Tally rep issues into a compact { issueLabel: count } map */
+function normalizeIssues(reps) {
+  const map = {};
+  for (const r of reps) {
+    if (r.issue) {
+      const key = r.issue.length > 40 ? r.issue.slice(0, 40) : r.issue;
+      map[key] = (map[key] || 0) + 1;
+    }
+    if (Array.isArray(r.compensations)) {
+      for (const c of r.compensations) {
+        map[c] = (map[c] || 0) + 1;
+      }
+    }
+  }
+  return map;
 }
 
 /**
@@ -361,11 +509,11 @@ async function upsertUserProfile(uid, data) {
   // Fields that are fixed at creation time
   const createOnly = {
     role: data.role === 'doctor' ? 'doctor' : 'patient',
-    doctorId: data.doctorId || null,
+    doctorId: data.doctorId !== undefined ? data.doctorId : null,
     createdAt: new Date().toISOString(),
   };
 
-  // Local store: keep existing role / doctorId if the user already exists
+  // Local store: keep existing role / doctorId / fullName if the user already exists
   localStore.users[uid] = existingLocal
     ? { ...existingLocal, ...mutable, uid }
     : { ...createOnly, ...mutable, uid };
@@ -670,6 +818,456 @@ async function assignExercise(assignmentData) {
   return payload;
 }
 
+// -------------------------------------------------------------
+// Generic record helpers (used by programs, patientPrograms, clinics)
+// -------------------------------------------------------------
+
+async function cloudSet(name, id, data) {
+  if (!db) return;
+  try {
+    if (isClientSdk) {
+      await setDoc(doc(db, name, id), data);
+    } else {
+      await db.collection(name).doc(id).set(data);
+    }
+  } catch (err) {
+    handleFirestoreError(`set ${name}`, err);
+  }
+}
+
+async function cloudGet(name, id) {
+  if (!db) return null;
+  try {
+    if (isClientSdk) {
+      const snap = await getDoc(doc(db, name, id));
+      return snap.exists() ? { id: snap.id, ...snap.data() } : null;
+    }
+    const snap = await db.collection(name).doc(id).get();
+    return snap.exists ? { id: snap.id, ...snap.data() } : null;
+  } catch (err) {
+    handleFirestoreError(`get ${name}`, err);
+    return null;
+  }
+}
+
+async function cloudDelete(name, id) {
+  if (!db) return;
+  try {
+    if (isClientSdk) {
+      const { deleteDoc } = require('firebase/firestore');
+      await deleteDoc(doc(db, name, id));
+    } else {
+      await db.collection(name).doc(id).delete();
+    }
+  } catch (err) {
+    handleFirestoreError(`delete ${name}`, err);
+  }
+}
+
+async function cloudFind(name, field, value) {
+  if (!db) return [];
+  try {
+    if (isClientSdk) {
+      const snap = await getDocs(query(collection(db, name), where(field, '==', value)));
+      return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    }
+    const snap = await db.collection(name).where(field, '==', value).get();
+    return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  } catch (err) {
+    handleFirestoreError(`find ${name}`, err);
+    return [];
+  }
+}
+
+async function saveRecord(name, record) {
+  localStore[name][record.id] = record;
+  persistLocalStore();
+  await cloudSet(name, record.id, record);
+  return record;
+}
+
+async function getRecord(name, id) {
+  if (localStore[name][id]) return localStore[name][id];
+  return cloudGet(name, id);
+}
+
+async function deleteRecord(name, id) {
+  delete localStore[name][id];
+  persistLocalStore();
+  await cloudDelete(name, id);
+}
+
+// Merge cloud + local (local wins), filtered by field === value
+async function findRecords(name, field, value) {
+  const cloud = await cloudFind(name, field, value);
+  const merged = {};
+  cloud.forEach((r) => { merged[r.id] = r; });
+  Object.values(localStore[name]).forEach((r) => {
+    if (r[field] === value) merged[r.id] = r;
+  });
+  return Object.values(merged);
+}
+
+function newId(prefix) {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+}
+
+// -------------------------------------------------------------
+// Assignment update (needed by program progression)
+// -------------------------------------------------------------
+
+async function updateAssignment(assignmentId, patch) {
+  const existing = localStore.assignedExercises[assignmentId] || await cloudGet('assignedExercises', assignmentId);
+  if (!existing) return null;
+  const updated = { ...existing, ...patch, id: assignmentId, updatedAt: new Date().toISOString() };
+  localStore.assignedExercises[assignmentId] = updated;
+  persistLocalStore();
+  await cloudSet('assignedExercises', assignmentId, updated);
+  return updated;
+}
+
+// -------------------------------------------------------------
+// Programs (item 25)
+// -------------------------------------------------------------
+
+/**
+ * program = {
+ *   id, name, description, doctorId, doctorName, clinicId|null,
+ *   items: [{ exerciseId, exerciseName, targetSets, targetReps, daysOfWeek:[0-6], notes }],
+ *   progression: { enabled, goodSessionsRequired, accuracyThreshold, repsIncrement, setsIncrement, maxReps, maxSets },
+ *   createdAt
+ * }
+ */
+async function createProgram(data) {
+  const program = { ...data, id: newId('prog'), createdAt: new Date().toISOString() };
+  return saveRecord('programs', program);
+}
+
+async function getProgramById(id) {
+  return getRecord('programs', id);
+}
+
+// Programs created by this doctor + programs shared with the doctor's clinic
+async function getProgramsForDoctor(doctorUid, clinicId = null) {
+  const own = await findRecords('programs', 'doctorId', doctorUid);
+  let shared = [];
+  if (clinicId) {
+    shared = (await findRecords('programs', 'clinicId', clinicId)).filter((p) => p.doctorId !== doctorUid);
+  }
+  return [...own, ...shared].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+}
+
+async function deleteProgram(id) {
+  return deleteRecord('programs', id);
+}
+
+// -------------------------------------------------------------
+// Patient programs = a program applied to one patient (item 25)
+// -------------------------------------------------------------
+
+/**
+ * Applies a program to a patient:
+ *  - archives the patient's previously active programs and their assignments
+ *  - creates one assignedExercises doc per program item (so the existing patient dashboard keeps working)
+ *  - creates the patientPrograms doc that tracks progression
+ */
+async function applyProgramToPatient(program, patient, doctor, startDate) {
+  // Archive previous active programs for this patient
+  const previous = await findRecords('patientPrograms', 'patientId', patient.uid);
+  for (const old of previous.filter((p) => p.status === 'active')) {
+    old.status = 'replaced';
+    await saveRecord('patientPrograms', old);
+    for (const item of old.items) {
+      if (item.assignmentId) await updateAssignment(item.assignmentId, { status: 'archived' });
+    }
+  }
+
+  const patientProgramId = newId('pp');
+  const items = [];
+  for (const item of program.items) {
+    const assignment = await assignExercise({
+      patientId: patient.uid,
+      patientEmail: patient.email || '',
+      exerciseId: item.exerciseId,
+      exerciseName: item.exerciseName,
+      doctorId: doctor.uid,
+      doctorName: doctor.fullName || '',
+      targetReps: item.targetReps,
+      targetSets: item.targetSets,
+      notes: item.notes || '',
+      status: 'active',
+      programId: program.id,
+      patientProgramId,
+      programName: program.name,
+      daysOfWeek: item.daysOfWeek || [],
+    });
+    items.push({ ...item, assignmentId: assignment.id, goodStreak: 0 });
+  }
+
+  const patientProgram = {
+    id: patientProgramId,
+    programId: program.id,
+    programName: program.name,
+    patientId: patient.uid,
+    patientEmail: patient.email || '',
+    doctorId: doctor.uid,
+    startDate: startDate || new Date().toISOString(),
+    status: 'active',
+    items,
+    progression: program.progression,
+    log: [],
+    createdAt: new Date().toISOString(),
+  };
+  return saveRecord('patientPrograms', patientProgram);
+}
+
+async function getPatientPrograms(patientId) {
+  const list = await findRecords('patientPrograms', 'patientId', patientId);
+  return list.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+}
+
+async function savePatientProgram(patientProgram) {
+  return saveRecord('patientPrograms', patientProgram);
+}
+
+// -------------------------------------------------------------
+// Clinics (item 27)
+// -------------------------------------------------------------
+
+/**
+ * clinic = { id, name, adminId, inviteCode, memberIds: [uid], createdAt }
+ */
+function generateInviteCode() {
+  return Math.random().toString(36).slice(2, 8).toUpperCase();
+}
+
+async function createClinic(name, adminUid) {
+  const clinic = {
+    id: newId('clinic'),
+    name,
+    adminId: adminUid,
+    inviteCode: generateInviteCode(),
+    memberIds: [adminUid],
+    createdAt: new Date().toISOString(),
+  };
+  await saveRecord('clinics', clinic);
+  await setUserFields(adminUid, { clinicId: clinic.id });
+  return clinic;
+}
+
+async function getClinicById(id) {
+  return getRecord('clinics', id);
+}
+
+async function getClinicByInviteCode(code) {
+  const clean = String(code || '').trim().toUpperCase();
+  const local = Object.values(localStore.clinics).find((c) => c.inviteCode === clean);
+  if (local) return local;
+  const cloud = await cloudFind('clinics', 'inviteCode', clean);
+  return cloud[0] || null;
+}
+
+async function saveClinic(clinic) {
+  return saveRecord('clinics', clinic);
+}
+
+// Set arbitrary fields on a user profile without touching anything else
+async function setUserFields(uid, fields) {
+  const existing = localStore.users[uid] || (await getUserProfile(uid)) || { uid };
+  localStore.users[uid] = { ...existing, ...fields, uid, updatedAt: new Date().toISOString() };
+  persistLocalStore();
+  if (!db) return localStore.users[uid];
+  try {
+    if (isClientSdk) {
+      await updateDoc(doc(db, 'users', uid), fields);
+    } else {
+      await db.collection('users').doc(uid).set(fields, { merge: true });
+    }
+  } catch (err) {
+    handleFirestoreError('setUserFields', err);
+  }
+  return localStore.users[uid];
+}
+
+async function getClinicMembers(clinic) {
+  const members = [];
+  for (const uid of clinic.memberIds) {
+    const p = await getUserProfile(uid);
+    if (p) members.push(p);
+  }
+  return members;
+}
+
+// All patients whose doctor belongs to the clinic, each tagged with doctorName
+async function getPatientsForClinic(clinic) {
+  const out = [];
+  for (const uid of clinic.memberIds) {
+    const docProfile = await getUserProfile(uid);
+    const patients = await getPatientsForDoctor(uid);
+    patients.forEach((p) => out.push({ ...p, doctorName: docProfile?.fullName || docProfile?.email || uid }));
+  }
+  return out;
+}
+
+// -------------------------------------------------------------
+// Coaching & Personalization helpers (Features 28 & 29)
+// -------------------------------------------------------------
+
+async function saveSessionCoaching(sessionId, coaching) {
+  const session = localStore.sessions[sessionId];
+  const patch = {
+    coaching,
+    coachingAt: new Date().toISOString(),
+  };
+  if (session) {
+    Object.assign(session, patch);
+    persistLocalStore();
+  }
+  if (!db) return;
+  try {
+    if (isClientSdk) {
+      await updateDoc(doc(db, 'sessions', sessionId), patch);
+    } else {
+      await db.collection('sessions').doc(sessionId).update(patch);
+    }
+  } catch (err) {
+    handleFirestoreError('saveSessionCoaching', err);
+  }
+}
+
+async function getPersonalization(uid, exerciseId) {
+  const key = `${uid}__${exerciseId}`;
+  if (localStore.personalization[key]) return localStore.personalization[key];
+  return getRecord('personalization', key);
+}
+
+async function savePersonalization(profile) {
+  const key = `${profile.uid}__${profile.exerciseId}`;
+  profile.id = key;
+  profile.updatedAt = new Date().toISOString();
+  localStore.personalization[key] = profile;
+  persistLocalStore();
+  await cloudSet('personalization', key, profile);
+  return profile;
+}
+
+// -------------------------------------------------------------
+// Privacy: consent + account/data deletion (item 36)
+// -------------------------------------------------------------
+
+async function saveUserConsent(uid, consent) {
+  const record = { ...consent, acceptedAt: new Date().toISOString() };
+  const existing = localStore.users[uid] || (await getUserProfile(uid)) || { uid };
+  localStore.users[uid] = { ...existing, uid, consent: record };
+  persistLocalStore();
+
+  if (db) {
+    try {
+      if (isClientSdk) {
+        await updateDoc(doc(db, 'users', uid), { consent: record });
+      } else {
+        await db.collection('users').doc(uid).set({ consent: record }, { merge: true });
+      }
+    } catch (err) {
+      handleFirestoreError('saveUserConsent', err);
+    }
+  }
+  return record;
+}
+
+// Delete every document in `name` where field == value (and a session's reps subcollection)
+async function cloudDeleteWhere(name, field, value) {
+  if (!db) return;
+  try {
+    if (isClientSdk) {
+      const { deleteDoc } = require('firebase/firestore');
+      const snap = await getDocs(query(collection(db, name), where(field, '==', value)));
+      for (const d of snap.docs) {
+        const reps = await getDocs(collection(d.ref, 'reps'));
+        for (const r of reps.docs) await deleteDoc(r.ref);
+        await deleteDoc(d.ref);
+      }
+    } else {
+      const snap = await db.collection(name).where(field, '==', value).get();
+      for (const d of snap.docs) {
+        if (typeof db.recursiveDelete === 'function') await db.recursiveDelete(d.ref);
+        else await d.ref.delete();
+      }
+    }
+  } catch (err) {
+    handleFirestoreError(`delete ${name}`, err);
+  }
+}
+
+/**
+ * Permanently delete a user's data.
+ * Patient: sessions + reps, assignments, programs progress, profile.
+ * Doctor: also their custom exercises, programs and the assignments they created; their patients are unlinked.
+ */
+async function deleteUserData(uid) {
+  const profile = await getUserProfile(uid);
+  const isDoctor = profile?.role === 'doctor';
+
+  // ---- local store ----
+  const dropWhere = (collectionName, predicate) => {
+    const col = localStore[collectionName];
+    if (!col) return;
+    Object.keys(col).forEach((key) => {
+      if (predicate(col[key])) delete col[key];
+    });
+  };
+  dropWhere('sessions', (s) => s.patientId === uid);
+  dropWhere('assignedExercises', (a) => a.patientId === uid || a.doctorId === uid);
+  dropWhere('patientPrograms', (p) => p.patientId === uid || p.doctorId === uid);
+  if (isDoctor) {
+    dropWhere('exercises', (e) => e.createdBy === uid);
+    dropWhere('programs', (p) => p.doctorId === uid);
+    Object.values(localStore.users).forEach((u) => {
+      if (u.doctorId === uid) u.doctorId = null;
+    });
+  }
+  delete localStore.users[uid];
+  persistLocalStore();
+
+  // ---- cloud ----
+  await cloudDeleteWhere('sessions', 'patientId', uid);
+  await cloudDeleteWhere('assignedExercises', 'patientId', uid);
+  await cloudDeleteWhere('assignedExercises', 'doctorId', uid);
+  await cloudDeleteWhere('patientPrograms', 'patientId', uid);
+  await cloudDeleteWhere('patientPrograms', 'doctorId', uid);
+
+  if (isDoctor) {
+    await cloudDeleteWhere('exercises', 'createdBy', uid);
+    await cloudDeleteWhere('programs', 'doctorId', uid);
+    if (db) {
+      try {
+        if (isClientSdk) {
+          const snap = await getDocs(query(collection(db, 'users'), where('doctorId', '==', uid)));
+          for (const d of snap.docs) await updateDoc(d.ref, { doctorId: null });
+        } else {
+          const snap = await db.collection('users').where('doctorId', '==', uid).get();
+          for (const d of snap.docs) await d.ref.update({ doctorId: null });
+        }
+      } catch (err) {
+        handleFirestoreError('unlink patients', err);
+      }
+    }
+  }
+
+  if (db) {
+    try {
+      if (isClientSdk) {
+        const { deleteDoc } = require('firebase/firestore');
+        await deleteDoc(doc(db, 'users', uid));
+      } else {
+        await db.collection('users').doc(uid).delete();
+      }
+    } catch (err) {
+      handleFirestoreError('delete user profile', err);
+    }
+  }
+}
+
 module.exports = {
   createSession,
   logRep,
@@ -686,4 +1284,32 @@ module.exports = {
   getAssignedExercises,
   getAssignmentsByDoctor,
   assignExercise,
+  updateAssignment,
+  createProgram,
+  getProgramById,
+  getProgramsForDoctor,
+  deleteProgram,
+  applyProgramToPatient,
+  getPatientPrograms,
+  savePatientProgram,
+  createClinic,
+  getClinicById,
+  getClinicByInviteCode,
+  saveClinic,
+  setUserFields,
+  getClinicMembers,
+  getPatientsForClinic,
+  saveSessionCoaching,
+  getPersonalization,
+  savePersonalization,
+  saveUserConsent,
+  deleteUserData,
+  // Generic helpers (items 21-24)
+  getDocById,
+  putDoc,
+  queryDocs,
+  patchSession,
+  localCol,
+  localStore,
+  persistLocalStore,
 };

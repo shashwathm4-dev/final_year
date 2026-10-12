@@ -11,15 +11,33 @@ const sessionRoute = require('./routes/session');
 const usersRoute = require('./routes/users');
 const exercisesRoute = require('./routes/exercises');
 const assignmentsRoute = require('./routes/assignments');
+const privacyRoute = require('./routes/privacy');
+const { globalLimiter } = require('./middleware/rateLimits');
+const analyticsRoute = require('./routes/analytics');
+const commentsRoute = require('./routes/comments');
+const clinicsRoute = require('./routes/clinics');
+const programsRoute = require('./routes/programs');
+const reportsRoute = require('./routes/reports');
+const insightsRoute = require('./routes/insights');
+const modelsRoute = require('./routes/models');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Behind a proxy/load balancer set TRUST_PROXY=1 so rate limits see the real client IP
+if (process.env.TRUST_PROXY) app.set('trust proxy', Number(process.env.TRUST_PROXY) || 1);
+
 // Middleware
 app.use(cors({ origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : true }));
-// 2mb limit for base64 camera frame payloads
-app.use(express.json({ limit: '2mb' }));
-app.use(express.urlencoded({ limit: '2mb', extended: true }));
+
+// Only /api/verify-rep carries a camera frame; every other route gets a small body limit
+const bigJson = express.json({ limit: '5mb' });
+const smallJson = express.json({ limit: '100kb' });
+app.use((req, res, next) => (req.path === '/api/verify-rep' ? bigJson(req, res, next) : smallJson(req, res, next)));
+app.use(express.urlencoded({ limit: '100kb', extended: true }));
+
+// Broad per-IP guard on the whole API
+app.use('/api', globalLimiter);
 
 // Routes
 app.use('/api', verifyRoute);
@@ -27,6 +45,14 @@ app.use('/api', sessionRoute);
 app.use('/api/users', usersRoute);
 app.use('/api/exercises', exercisesRoute);
 app.use('/api/assignments', assignmentsRoute);
+app.use('/api/privacy', privacyRoute);
+app.use('/api/analytics', analyticsRoute);
+app.use('/api/comments', commentsRoute);
+app.use('/api/clinics', clinicsRoute);
+app.use('/api/programs', programsRoute);
+app.use('/api/reports', reportsRoute);
+app.use('/api/insights', insightsRoute);
+app.use('/api/models', modelsRoute);
 
 
 // Health check
@@ -40,6 +66,15 @@ app.get('/api/health', (req, res) => {
       firebaseConfigured: !!process.env.FIREBASE_PROJECT_ID,
     },
   });
+});
+
+// JSON-friendly error handler (body too large, malformed JSON, unexpected errors)
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  if (err.type === 'entity.too.large') return res.status(413).json({ error: 'Request body too large' });
+  if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'Malformed JSON body' });
+  console.error('[Unhandled error]', err);
+  res.status(500).json({ error: 'Server error' });
 });
 
 // Start server

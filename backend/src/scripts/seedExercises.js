@@ -3,7 +3,12 @@
  * Run manually via: node src/scripts/seedExercises.js
  */
 const { db, isClientSdk } = require('../config/firebase');
-const defaultExercises = require('../../../frontend/src/config/exercises.json');
+let defaultExercises;
+try {
+  defaultExercises = require('../config/exercises.json');
+} catch {
+  defaultExercises = require('../../../frontend/src/config/exercises.json');
+}
 
 async function seed() {
   console.log('Seeding exercises to Firestore...');

@@ -161,6 +161,7 @@ export default function useRepDetection(exerciseConfig, onRepComplete) {
             setRepCount(newRepCount);
 
             // Collect rep data
+            const startTs = startFrameRef.current?.timestamp ?? frame.timestamp;
             const repData = {
               repNumber: newRepCount,
               startFrame: startFrameRef.current,
@@ -168,6 +169,7 @@ export default function useRepDetection(exerciseConfig, onRepComplete) {
               endFrame: frame,
               peakAngle: peakAngleRef.current,
               frames: [...frameBufferRef.current],
+              durationMs: Math.max(1, frame.timestamp - startTs),
               timestamp: Date.now(),
             };
 

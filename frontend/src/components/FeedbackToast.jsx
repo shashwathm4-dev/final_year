@@ -79,6 +79,12 @@ export default function FeedbackToast({ feedback, onDismiss }) {
               ? '🤖 AI Verified'
               : isError
               ? '⚡ Error'
+              : feedback.verdictSource === 'model'
+              ? `🧠 On-device model (p=${(feedback.modelProb ?? 0.9).toFixed(2)})`
+              : feedback.verdictSource === 'offline'
+              ? '📴 Offline check'
+              : feedback.verdictSource === 'skipped'
+              ? '⏭ AI check skipped'
               : feedback.verdictSource === 'hold_check'
               ? '⏱ Hold check'
               : feedback.verdictSource === 'checkpoint_only'
@@ -88,10 +94,12 @@ export default function FeedbackToast({ feedback, onDismiss }) {
         </div>
         <p className="toast-message">
           {feedback.issue ||
-            (feedback.verdictSource === 'checkpoint_only'
+            (feedback.verdictSource === 'checkpoint_only' || feedback.verdictSource === 'skipped'
               ? 'Angles look correct (visual AI check was skipped)'
               : feedback.verdictSource === 'hold_check'
               ? 'Hold completed — nicely done!'
+              : feedback.verdictSource === 'offline'
+              ? 'Offline — local checkpoints passed'
               : 'Perfect rep — keep it up!')}
         </p>
         {feedback.limitingFactor && feedback.limitingFactor !== 'Optimal Form' && (

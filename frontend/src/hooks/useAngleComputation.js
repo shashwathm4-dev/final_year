@@ -16,6 +16,7 @@ import {
   verticalAngle2D,
   verticalAngle3D,
   applyAngleTransform,
+  frameSize,
 } from '../utils/angleUtils';
 
 const DEFAULT_SIZE = { w: 640, h: 480 };
@@ -43,7 +44,9 @@ function threePointFor(landmarks, world, idx, transform, use3D, size) {
     raw = threePointAngle3D(wA, wB, wC);
     used3D = true;
   } else {
-    raw = threePointAngle([pA.x * size.w, pA.y * size.h], [pB.x * size.w, pB.y * size.h], [pC.x * size.w, pC.y * size.h]);
+    const { w, h } = size && size.w && size.h ? size : frameSize;
+    const angle = threePointAngle([pA.x * w, pA.y * h], [pB.x * w, pB.y * h], [pC.x * w, pC.y * h]);
+    raw = angle;
   }
   return { angle: applyAngleTransform(raw || 0, transform), confidence, used3D };
 }

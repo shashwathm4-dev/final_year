@@ -9,8 +9,13 @@ import SignupPage from './pages/SignupPage';
 import PatientDashboard from './pages/PatientDashboard';
 import DoctorDashboard from './pages/DoctorDashboard';
 import ExerciseBuilder from './pages/ExerciseBuilder';
+import ProgramBuilder from './pages/ProgramBuilder';
+import ClinicPage from './pages/ClinicPage';
 import ProtectedRoute from './components/ProtectedRoute';
 import ExerciseSession from './components/ExerciseSession';
+import ConsentGate from './components/ConsentGate';
+import PrivacyPage from './pages/PrivacyPage';
+import OfflineBanner from './components/OfflineBanner';
 import './App.css';
 
 function RootRedirect() {
@@ -33,6 +38,7 @@ function RootRedirect() {
 export default function App() {
   return (
     <div className="app">
+      <OfflineBanner />
       <Routes>
         {/* Public routes */}
         <Route path="/login" element={<LoginPage />} />
@@ -65,6 +71,22 @@ export default function App() {
             </ProtectedRoute>
           }
         />
+        <Route
+          path="/programs"
+          element={
+            <ProtectedRoute allowedRoles={['doctor']}>
+              <ProgramBuilder />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/clinic"
+          element={
+            <ProtectedRoute allowedRoles={['doctor']}>
+              <ClinicPage />
+            </ProtectedRoute>
+          }
+        />
 
 
         {/* Session route — both roles can access */}
@@ -72,7 +94,19 @@ export default function App() {
           path="/session/:exerciseId"
           element={
             <ProtectedRoute allowedRoles={['patient', 'doctor']}>
-              <ExerciseSession />
+              <ConsentGate>
+                <ExerciseSession />
+              </ConsentGate>
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Privacy page — both roles */}
+        <Route
+          path="/privacy"
+          element={
+            <ProtectedRoute allowedRoles={['patient', 'doctor']}>
+              <PrivacyPage />
             </ProtectedRoute>
           }
         />

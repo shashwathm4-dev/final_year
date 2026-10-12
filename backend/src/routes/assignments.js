@@ -7,6 +7,9 @@ const express = require('express');
 const router = express.Router();
 const requireAuth = require('../middleware/requireAuth');
 const requireRole = require('../middleware/requireRole');
+const validate = require('../middleware/validate');
+const { writeLimiter } = require('../middleware/rateLimits');
+const { assignmentSchema } = require('../validation/schemas');
 const {
   getAssignedExercises,
   getAssignmentsByDoctor,
@@ -29,7 +32,7 @@ router.get('/', requireAuth, async (req, res) => {
   }
 });
 
-router.post('/', requireAuth, requireRole('doctor'), async (req, res) => {
+router.post('/', requireAuth, requireRole('doctor'), writeLimiter, validate(assignmentSchema), async (req, res) => {
   try {
     const {
       patientId,

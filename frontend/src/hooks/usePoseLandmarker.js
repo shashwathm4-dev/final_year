@@ -9,10 +9,12 @@ import { LandmarkSmoother } from '../utils/landmarkSmoother';
 // Tuning: raise minCutoff if the skeleton looks too "floaty"; raise beta if fast moves lag.
 const SMOOTHING = { minCutoff: 1.5, beta: 8, dCutoff: 1.0 };
 
-const MODEL_URL =
+const MODEL_URL = '/models/pose_landmarker_lite.task';
+const WASM_CDN = '/mediapipe/wasm';
+const REMOTE_MODEL_URL =
   'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task';
-const WASM_CDN =
-  'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm';
+const REMOTE_WASM_CDN =
+  'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm';
 
 export default function usePoseLandmarker() {
   const landmarkerRef = useRef(null);
@@ -24,29 +26,38 @@ export default function usePoseLandmarker() {
   useEffect(() => {
     let cancelled = false;
 
+    async function createLandmarker(wasmPath, modelPath) {
+      const vision = await FilesetResolver.forVisionTasks(wasmPath);
+      if (cancelled) return null;
+      return await PoseLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath: modelPath,
+          delegate: 'GPU',
+        },
+        runningMode: 'VIDEO',
+        numPoses: 1,
+        minPoseDetectionConfidence: 0.5,
+        minPosePresenceConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+      });
+    }
+
     async function init() {
       try {
         setIsLoading(true);
         setError(null);
 
-        const vision = await FilesetResolver.forVisionTasks(WASM_CDN);
-
-        if (cancelled) return;
-
-        const landmarker = await PoseLandmarker.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: MODEL_URL,
-            delegate: 'GPU', // Use GPU acceleration if available
-          },
-          runningMode: 'VIDEO',
-          numPoses: 1,
-          minPoseDetectionConfidence: 0.5,
-          minPosePresenceConfidence: 0.5,
-          minTrackingConfidence: 0.5,
-        });
+        let landmarker;
+        try {
+          // Attempt local offline assets first
+          landmarker = await createLandmarker(WASM_CDN, MODEL_URL);
+        } catch (localErr) {
+          console.warn('Local pose model load failed, retrying remote CDN:', localErr.message);
+          landmarker = await createLandmarker(REMOTE_WASM_CDN, REMOTE_MODEL_URL);
+        }
 
         if (cancelled) {
-          landmarker.close();
+          if (landmarker) landmarker.close();
           return;
         }
 

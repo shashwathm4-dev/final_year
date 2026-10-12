@@ -9,8 +9,8 @@ import {
   signOut as firebaseSignOut,
   onAuthStateChanged,
 } from 'firebase/auth';
-import { auth } from '../config/firebase';
-import { syncUserProfile, getMyProfile } from '../services/api';
+import { syncUserProfile, flushOfflineQueue, getMyProfile } from '../services/api';
+import { clearOfflineData } from '../services/offlineQueue';
 
 const AuthContext = createContext(null);
 
@@ -107,6 +107,9 @@ export function AuthProvider({ children }) {
 
   const handleSignOut = useCallback(async () => {
     if (!auth) return;
+    // Upload anything still queued, then wipe cached health data from this device
+    await flushOfflineQueue().catch(() => {});
+    clearOfflineData();
     await firebaseSignOut(auth);
     setUser(null);
     setRole(null);

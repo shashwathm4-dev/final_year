@@ -143,3 +143,16 @@ export function computeHoldQuality(frames, exerciseConfig, repData) {
   return { tempoScore, smoothnessScore, romScore, qualityScore, limitingFactor };
 }
 
+/** Resample a rep's angle sequence to N evenly spaced points (linear interpolation). */
+export function resampleCurve(frames, n = 16) {
+  if (!frames || frames.length < 2) return null;
+  const a = frames.map((f) => f.angle);
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const pos = (i / (n - 1)) * (a.length - 1);
+    const lo = Math.floor(pos), hi = Math.min(a.length - 1, lo + 1);
+    out.push(Math.round((a[lo] + (a[hi] - a[lo]) * (pos - lo)) * 10) / 10);
+  }
+  return out;
+}
+

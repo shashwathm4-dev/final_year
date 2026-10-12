@@ -6,6 +6,7 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { drawSkeleton, drawAngleArc } from '../utils/canvasDrawing';
 import { getLandmark } from '../utils/landmarkUtils';
+import { setFrameSize } from '../utils/angleUtils';
 
 export default function PoseCamera({
   detectForVideo,
@@ -19,6 +20,7 @@ export default function PoseCamera({
   const canvasRef = useRef(null);
   const animFrameRef = useRef(null);
   const streamRef = useRef(null);
+  const rootRef = useRef(null);
 
   // Start webcam
   useEffect(() => {
@@ -76,8 +78,12 @@ export default function PoseCamera({
     const scale = Math.min(1, MAX_W / video.videoWidth);
     oc.width = Math.round(video.videoWidth * scale);
     oc.height = Math.round(video.videoHeight * scale);
-    oc.getContext('2d').drawImage(video, 0, 0, oc.width, oc.height);
-    return oc.toDataURL('image/jpeg', 0.7);
+    const octx = oc.getContext('2d');
+    octx.drawImage(video, 0, 0, oc.width, oc.height);
+    const dataUrl = oc.toDataURL('image/jpeg', 0.7);
+    // Don't leave a copy of the camera frame sitting in the offscreen canvas
+    octx.clearRect(0, 0, oc.width, oc.height);
+    return dataUrl;
   }, []);
 
   useEffect(() => {
@@ -161,7 +167,7 @@ export default function PoseCamera({
   }, [isReady, isActive, detectForVideo, onFrame, exerciseConfig, currentAngle, captureFrameDataUrl]);
 
   return (
-    <div className="pose-camera">
+    <div className="pose-camera" ref={rootRef}>
       <video
         ref={videoRef}
         autoPlay
@@ -169,8 +175,13 @@ export default function PoseCamera({
         muted
         onLoadedMetadata={() => {
           if (canvasRef.current && videoRef.current) {
-            canvasRef.current.width = videoRef.current.videoWidth || 640;
-            canvasRef.current.height = videoRef.current.videoHeight || 480;
+            const w = videoRef.current.videoWidth || 640;
+            const h = videoRef.current.videoHeight || 480;
+            canvasRef.current.width = w;
+            canvasRef.current.height = h;
+            setFrameSize(w, h);
+            // Lets the mobile CSS keep the skeleton aligned with the video (portrait or landscape)
+            if (rootRef.current) rootRef.current.style.setProperty('--video-aspect', `${w} / ${h}`);
           }
         }}
       />

@@ -8,10 +8,18 @@ const express = require('express');
 const router = express.Router();
 const requireAuth = require('../middleware/requireAuth');
 const requireRole = require('../middleware/requireRole');
+const validate = require('../middleware/validate');
+const { writeLimiter } = require('../middleware/rateLimits');
+const { exerciseSchema } = require('../validation/schemas');
 const { getExercises, getExerciseById, createExercise } = require('../services/firestore');
 
 // Read static built-in exercises as guaranteed fallback
-const defaultExercises = require('../../../frontend/src/config/exercises.json');
+let defaultExercises;
+try {
+  defaultExercises = require('../config/exercises.json');
+} catch {
+  defaultExercises = require('../../../frontend/src/config/exercises.json');
+}
 
 router.get('/', requireAuth, async (req, res) => {
   try {
@@ -50,7 +58,7 @@ router.get('/:id', requireAuth, async (req, res) => {
   }
 });
 
-router.post('/', requireAuth, requireRole('doctor'), async (req, res) => {
+router.post('/', requireAuth, requireRole('doctor'), writeLimiter, validate(exerciseSchema), async (req, res) => {
   try {
     const {
       id,

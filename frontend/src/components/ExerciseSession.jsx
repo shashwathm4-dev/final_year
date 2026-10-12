@@ -19,7 +19,12 @@ import useVoiceCoach from '../hooks/useVoiceCoach';
 import useFramingGate from '../hooks/useFramingGate';
 import useCalibration from '../hooks/useCalibration';
 import { computeCheckpoints, compareToReference, describeMismatch } from '../utils/checkpointComparison';
-import { computeRepQuality, computeHoldQuality } from '../utils/repQuality';
+import { computeRepQuality, computeHoldQuality, resampleCurve } from '../utils/repQuality';
+import { computeFatigue } from '../utils/fatigueDetection';
+import { useAdaptiveConfig } from '../hooks/useAdaptiveConfig';
+import { useRepClassifier } from '../hooks/useRepClassifier';
+import { featuresFromRep, predictProb } from '../utils/repClassifier';
+import ConnectionBadge from './ConnectionBadge';
 import { applySide } from '../utils/sideUtils';
 import { loadCalibration, saveCalibration, clearCalibration, calibrateConfig } from '../utils/calibration';
 import {
@@ -30,8 +35,11 @@ import {
   COMPENSATION_LABELS,
   COMPENSATION_CUES,
 } from '../utils/compensation';
-import { startSession, logRep, endSession, verifyRep, getExercise } from '../services/api';
+import { startSession, logRep, endSession, verifyRep, getExercise, logRepPlayback } from '../services/api';
+import { buildPlaybackPayload } from '../utils/playbackUtils';
 import defaultExercises from '../config/exercises.json';
+import { auth } from '../config/firebase';
+import { isCloudAiAllowed } from '../utils/consent';
 
 const fallbackDefault = Object.values(defaultExercises)[0];
 
@@ -76,30 +84,42 @@ export default function ExerciseSession({ exerciseConfig: propConfig, onBack: pr
       });
   }, [exerciseId, propConfig]);
 
-  const baseConfig = useMemo(() => {
+  const baseExerciseConfig = useMemo(() => {
     if (propConfig) return propConfig;
     if (exerciseId && defaultExercises[exerciseId]) return defaultExercises[exerciseId];
     if (customExercise) return customExercise;
     return fallbackDefault;
   }, [propConfig, exerciseId, customExercise]);
 
+  const {
+    config: adaptedBaseConfig,
+    adaptive,
+    enabled: adaptiveOn,
+    setEnabled: setAdaptiveOn,
+    ready: adaptiveReady,
+    workingTargetPeak,
+    thresholdScale,
+  } = useAdaptiveConfig(baseExerciseConfig);
+
   // ---- Side selection (item 6) ----
-  const [side, setSide] = useState(() => defaultSideFor(baseConfig));
+  const [side, setSide] = useState(() => defaultSideFor(adaptedBaseConfig));
   useEffect(() => {
-    setSide(defaultSideFor(baseConfig));
-  }, [baseConfig]);
-  const sidedConfig = useMemo(() => applySide(baseConfig, side), [baseConfig, side]);
+    setSide(defaultSideFor(adaptedBaseConfig));
+  }, [adaptedBaseConfig]);
+  const sidedConfig = useMemo(() => applySide(adaptedBaseConfig, side), [adaptedBaseConfig, side]);
 
   // ---- Calibration (item 11): stored per user / exercise / side ----
   const [calibration, setCalibration] = useState(null);
   const [calibError, setCalibError] = useState('');
   useEffect(() => {
-    setCalibration(loadCalibration(uid, baseConfig.id, sidedConfig.side));
+    setCalibration(loadCalibration(uid, adaptedBaseConfig.id, sidedConfig.side));
     setCalibError('');
-  }, [uid, baseConfig.id, sidedConfig.side]);
+  }, [uid, adaptedBaseConfig.id, sidedConfig.side]);
 
   const exerciseConfig = useMemo(() => calibrateConfig(sidedConfig, calibration), [sidedConfig, calibration]);
   const isHold = exerciseConfig.mode === 'hold';
+
+  const { model: repModel } = useRepClassifier(exerciseConfig.id);
 
   const onBack = useCallback(() => {
     if (propOnBack) propOnBack();
@@ -117,15 +137,36 @@ export default function ExerciseSession({ exerciseConfig: propConfig, onBack: pr
   const [showSummary, setShowSummary] = useState(false);
   const [confidence, setConfidence] = useState(0);
   const [isVerifying, setIsVerifying] = useState(false);
+  const [progressionResult, setProgressionResult] = useState(null);
   const [liveFlags, setLiveFlags] = useState([]);
   const [skipGate, setSkipGate] = useState(false);
 
   const currentAngleRef = useRef(0);
+  const sessionStartRef = useRef(Date.now());
+  const pendingRepsRef = useRef(new Set());
+  const repHistoryRef = useRef([]);
+  const fatigueWarnedRef = useRef(false);
   const lastVlmAtRef = useRef(0);
   const postureBufferRef = useRef([]);   // rolling posture samples while NOT active (item 9)
   const baselineRef = useRef(null);      // averaged baseline posture captured at Start
   const liveFlagsKeyRef = useRef('');
   const trackingLostRef = useRef(false);
+
+  const fatigue = useMemo(() => computeFatigue(repHistory), [repHistory]);
+
+  useEffect(() => {
+    if (fatigue.level === 'high' && !fatigueWarnedRef.current) {
+      fatigueWarnedRef.current = true;
+      setFeedback({
+        correct: null,
+        issue: 'You look fatigued — consider resting before the next set.',
+        severity: 'medium',
+        verdictSource: 'local',
+        source: 'local',
+        repNumber: repHistory.length,
+      });
+    }
+  }, [fatigue.level, repHistory.length]);
 
   // ---- Framing gate (item 10) ----
   const { status: gateStatus, evaluate: evaluateGate } = useFramingGate(exerciseConfig);
@@ -203,10 +244,19 @@ export default function ExerciseSession({ exerciseConfig: propConfig, onBack: pr
       let severity = 'low';
       let skipReason = null;
       let patientCheckpoints = null;
+      let modelProb = null;
       let quality;
 
       if (isHoldRep) {
         quality = computeHoldQuality(frames, exerciseConfig, repData);
+      } else {
+        quality = computeRepQuality(frames, exerciseConfig);
+      }
+
+      const curve = resampleCurve(frames, 16);
+      let comparison = null;
+
+      if (isHoldRep) {
         const maxBreaks = exerciseConfig.hold.maxBreaks ?? 3;
         verdictSource = 'hold_check';
         if (repData.breaks > maxBreaks) {
@@ -215,11 +265,10 @@ export default function ExerciseSession({ exerciseConfig: propConfig, onBack: pr
           severity = repData.breaks > maxBreaks + 2 ? 'high' : 'medium';
         }
       } else {
-        quality = computeRepQuality(frames, exerciseConfig);
         patientCheckpoints = computeCheckpoints(frames);
 
         if (patientCheckpoints) {
-          const comparison = compareToReference(
+          comparison = compareToReference(
             patientCheckpoints,
             exerciseConfig.referenceCheckpoints,
             exerciseConfig.checkpoint_thresholds
@@ -231,47 +280,75 @@ export default function ExerciseSession({ exerciseConfig: propConfig, onBack: pr
             issue = describeMismatch(comparison.failedCheckpoints, comparison.deltas);
             severity = comparison.maxDelta > 30 ? 'high' : 'medium';
           } else {
-            const sinceLast = Date.now() - lastVlmAtRef.current;
-            if (sinceLast < VLM_MIN_GAP_MS) {
-              verdictSource = 'checkpoint_only';
-              skipReason = 'cooldown';
-            } else {
-              setIsVerifying(true);
-              try {
-                const patientFrame = peakFrame?.frameDataUrl || null;
-                if (!patientFrame) {
-                  verdictSource = 'checkpoint_only';
-                  skipReason = 'no_frame';
-                } else {
-                  lastVlmAtRef.current = Date.now();
-                  const vlmResult = await verifyRep({
-                    patientFrame,
-                    referenceFrame: null,
-                    exerciseId: exerciseConfig.id,
-                    sessionId,
-                  });
+            // Checkpoints passed -> check on-device model first
+            const feats = repModel
+              ? featuresFromRep(
+                  { curve, peakAngle: repData.peakAngle, durationMs: repData.durationMs, quality },
+                  exerciseConfig
+                )
+              : null;
+            const p = feats ? predictProb(repModel, feats) : null;
+            const AUDIT_RATE = 0.1;
+            const acceptThresh = repModel?.thresholds?.accept ?? 0.85;
+            const rejectThresh = repModel?.thresholds?.reject ?? 0.15;
+            const confident = p != null && (p >= acceptThresh || p <= rejectThresh);
+            const audit = Math.random() < AUDIT_RATE;
 
-                  if (vlmResult.source === 'vlm') {
-                    verdictSource = 'vlm';
+            if (typeof navigator !== 'undefined' && !navigator.onLine && (!confident || audit)) {
+              verdictSource = 'offline';
+              correct = true;
+              issue = 'Offline — AI check skipped (local checkpoints passed)';
+            } else if (confident && !audit) {
+              verdictSource = 'model';
+              correct = p >= acceptThresh;
+              issue = correct ? null : 'Movement pattern differs from your good reps';
+              severity = correct ? 'low' : 'medium';
+              modelProb = p;
+            } else if (!isCloudAiAllowed(auth?.currentUser?.uid)) {
+              // Patient chose on-device checks only — no image leaves the device
+              verdictSource = 'local';
+              correct = true;
+              issue = null;
+              severity = 'low';
+            } else {
+              const sinceLast = Date.now() - lastVlmAtRef.current;
+              if (sinceLast < VLM_MIN_GAP_MS) {
+                verdictSource = 'checkpoint_only';
+                skipReason = 'cooldown';
+              } else {
+                setIsVerifying(true);
+                try {
+                  const patientFrame = peakFrame?.frameDataUrl || null;
+                  if (!patientFrame) {
+                    verdictSource = 'checkpoint_only';
+                    skipReason = 'no_frame';
+                  } else {
+                    lastVlmAtRef.current = Date.now();
+                    const vlmResult = await verifyRep({
+                      patientFrame,
+                      referenceFrame: null,
+                      exerciseId: exerciseConfig.id,
+                      sessionId,
+                    });
+
                     correct = vlmResult.correct;
                     issue = vlmResult.issue || null;
                     severity = vlmResult.severity || 'low';
-                  } else if (vlmResult.source === 'skipped') {
-                    verdictSource = 'checkpoint_only';
-                    skipReason = vlmResult.skipReason || 'unknown';
-                  } else {
-                    verdictSource = 'error';
-                    correct = null;
-                    issue = vlmResult.issue || 'AI verification unavailable';
+                    if (vlmResult.source === 'vlm') verdictSource = 'vlm';
+                    else if (vlmResult.source === 'error') verdictSource = 'error';
+                    else {
+                      verdictSource = 'skipped';
+                      issue = 'AI check skipped (rate limit / unavailable) — local checkpoints passed';
+                    }
                   }
+                } catch (err) {
+                  console.warn('VLM verification failed:', err);
+                  verdictSource = 'error';
+                  correct = null;
+                  issue = 'AI verification unavailable — please try again';
+                } finally {
+                  setIsVerifying(false);
                 }
-              } catch (err) {
-                console.warn('VLM verification failed:', err);
-                verdictSource = 'error';
-                correct = null;
-                issue = 'AI verification unavailable — please try again';
-              } finally {
-                setIsVerifying(false);
               }
             }
           }
@@ -305,28 +382,43 @@ export default function ExerciseSession({ exerciseConfig: propConfig, onBack: pr
         repNumber,
         qualityScore: quality.qualityScore,
         limitingFactor: quality.limitingFactor,
+        modelProb,
       });
 
-      setRepHistory((prev) => [
-        ...prev,
-        {
-          repNumber,
-          timestamp: Date.now(),
-          peakAngle: repData.peakAngle,
-          verdictSource,
-          skipReason,
-          correct,
-          issue,
-          severity,
-          mode: isHoldRep ? 'hold' : 'reps',
-          holdSeconds: repData.holdSeconds ?? null,
-          breaks: repData.breaks ?? null,
-          compensations,
-          ...quality,
-        },
-      ]);
+      const historyEntry = {
+        repNumber,
+        timestamp: Date.now(),
+        peakAngle: repData.peakAngle,
+        durationMs: repData.durationMs,
+        curve,
+        modelProb,
+        verdictSource,
+        skipReason,
+        correct,
+        issue,
+        severity,
+        mode: isHoldRep ? 'hold' : 'reps',
+        holdSeconds: repData.holdSeconds ?? null,
+        breaks: repData.breaks ?? null,
+        compensations,
+        ...quality,
+      };
+
+      setRepHistory((prev) => {
+        const next = [...prev, historyEntry];
+        repHistoryRef.current = next;
+        return next;
+      });
 
       coachAfterRep({ correct, quality, peakAngle: repData.peakAngle, repNumber, compensations, isHoldRep });
+
+      // Log to backend (+ skeleton playback for the doctor)
+      const playback = buildPlaybackPayload(frames, {
+        referenceCheckpoints: exerciseConfig.referenceCheckpoints,
+        deltas: comparison?.deltas,
+        failedCheckpoints: comparison?.failedCheckpoints,
+        highlightJoints: Object.values(exerciseConfig.landmarkIndices || {}),
+      });
 
       await logRep({
         sessionId,
@@ -349,14 +441,29 @@ export default function ExerciseSession({ exerciseConfig: propConfig, onBack: pr
         smoothnessScore: quality.smoothnessScore,
         romScore: quality.romScore,
         qualityScore: quality.qualityScore,
+        peakAngle: repData.peakAngle,
+        durationMs: repData.durationMs || (frames.length > 1 ? Math.round(frames[frames.length - 1].timestamp - frames[0].timestamp) : null),
+        curve,
+        modelProb,
+        checkpointDeltas: comparison?.deltas || null,
+        failedCheckpoints: comparison?.failedCheckpoints || [],
+        hasPlayback: !!playback,
       });
+      if (playback) logRepPlayback(sessionId, repNumber, playback); // fire and forget
     },
-    [exerciseConfig, sessionId, coachAfterRep]
+    [exerciseConfig, sessionId, coachAfterRep, repModel]
   );
 
+  const trackedRepComplete = useCallback((data) => {
+    const p = handleRepComplete(data);
+    pendingRepsRef.current.add(p);
+    p.finally(() => pendingRepsRef.current.delete(p));
+    return p;
+  }, [handleRepComplete]);
+
   // Both detectors are always created (hooks must be unconditional); only one receives a config.
-  const repDetector = useRepDetection(isHold ? null : exerciseConfig, handleRepComplete);
-  const holdDetector = useHoldDetection(isHold ? exerciseConfig : null, handleRepComplete);
+  const repDetector = useRepDetection(isHold ? null : exerciseConfig, trackedRepComplete);
+  const holdDetector = useHoldDetection(isHold ? exerciseConfig : null, trackedRepComplete);
   const detector = isHold ? holdDetector : repDetector;
   const { state: repState, repCount, currentAngle, addFrame, reset: resetReps, abortCurrent } = detector;
 
@@ -465,18 +572,26 @@ export default function ExerciseSession({ exerciseConfig: propConfig, onBack: pr
   };
 
   const handleResetCalibration = () => {
-    clearCalibration(uid, baseConfig.id, sidedConfig.side);
+    clearCalibration(uid, adaptedBaseConfig.id, sidedConfig.side);
     setCalibration(null);
   };
 
-  const handleStart = () => {
+  const handleStart = async () => {
     baselineRef.current = averagePosture(postureBufferRef.current);
     liveFlagsKeyRef.current = '';
     setLiveFlags([]);
+    fatigueWarnedRef.current = false;
     resetReps();
     setRepHistory([]);
+    repHistoryRef.current = [];
     setFeedback(null);
     setShowSummary(false);
+    const { sessionId: sid } = await startSession(exerciseConfig.id, {
+      startedAt: new Date().toISOString(),
+      difficulty: { adaptive, thresholdScale, workingTargetPeak },
+    });
+    setSessionId(sid);
+    sessionStartRef.current = Date.now();
     setIsActive(true);
     prevHoldStateRef.current = 'WAITING';
     speak('Session started. Get ready.', { key: 'session-start', interrupt: true, cooldownMs: 0 });
@@ -484,12 +599,14 @@ export default function ExerciseSession({ exerciseConfig: propConfig, onBack: pr
 
   const handleStop = async () => {
     setIsActive(false);
+    await Promise.allSettled([...pendingRepsRef.current]);
     setShowSummary(true);
+    setProgressionResult(null);
     liveFlagsKeyRef.current = '';
     setLiveFlags([]);
 
-    const total = repHistory.length;
-    const validReps = repHistory.filter((r) => r.correct === true).length;
+    const total = repHistoryRef.current.length;
+    const validReps = repHistoryRef.current.filter((r) => r.correct === true).length;
     const pct = total > 0 ? Math.round((validReps / total) * 100) : 0;
     speak(
       total > 0
@@ -499,25 +616,29 @@ export default function ExerciseSession({ exerciseConfig: propConfig, onBack: pr
     );
 
     if (sessionId) {
-      endSession({ sessionId, totalReps: total, correctReps: validReps }).catch((err) =>
-        console.warn('Could not finalize session on backend:', err.message)
-      );
+      endSession({ sessionId, totalReps: total, correctReps: validReps })
+        .then((res) => {
+          if (res && res.progression) setProgressionResult(res.progression);
+        })
+        .catch((err) =>
+          console.warn('Could not finalize session on backend:', err.message)
+        );
     }
   };
 
   const sideOptions = useMemo(() => {
-    if (!baseConfig.supportsSide) return [];
+    if (!adaptedBaseConfig.supportsSide) return [];
     const opts = [
       { value: 'left', label: 'Left' },
       { value: 'right', label: 'Right' },
     ];
-    if (baseConfig.angleFunction === 'vsVertical') opts.push({ value: 'auto', label: 'Auto (higher side)' });
+    if (adaptedBaseConfig.angleFunction === 'vsVertical') opts.push({ value: 'auto', label: 'Auto (higher side)' });
     return opts;
-  }, [baseConfig]);
+  }, [adaptedBaseConfig]);
 
   const [rangeMin, rangeMax] = exerciseConfig.target_angle_range;
   const calibrating = calibPhase !== 'idle';
-  const startDisabled = !isReady || calibrating || !gateReady;
+  const startDisabled = !isReady || calibrating || !gateReady || !adaptiveReady;
 
   return (
     <div className="exercise-session">
@@ -531,6 +652,20 @@ export default function ExerciseSession({ exerciseConfig: propConfig, onBack: pr
           <h1>{exerciseConfig.displayName}</h1>
         </div>
         <div className="header-actions">
+          <ConnectionBadge />
+          {adaptive && !isActive && (
+            <div className="adaptive-chip" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', padding: '0.2rem 0.6rem', borderRadius: '999px', background: 'rgba(255,255,255,0.08)' }}>
+              <span>🎯 Adaptive: goal {workingTargetPeak}°</span>
+              <button
+                className="btn btn-ghost"
+                style={{ padding: '0.1rem 0.35rem', fontSize: '0.75rem' }}
+                onClick={() => setAdaptiveOn(!adaptiveOn)}
+                id="btn-toggle-adaptive"
+              >
+                {adaptiveOn ? 'Use standard targets' : 'Use adaptive goal'}
+              </button>
+            </div>
+          )}
           {voiceSupported && (
             <button className="btn btn-ghost" onClick={toggleVoice} id="btn-voice-toggle">
               {voiceEnabled ? '🔊 Voice on' : '🔇 Voice off'}
@@ -685,6 +820,11 @@ export default function ExerciseSession({ exerciseConfig: propConfig, onBack: pr
                 <span>Tracking: {Math.round(confidence * 100)}%</span>
               </div>
 
+              {/* Fatigue indicator */}
+              <div className={`fatigue-indicator fatigue-${fatigue.level}`}>
+                Fatigue: {fatigue.enoughData ? fatigue.level : 'measuring…'}
+              </div>
+
               {/* Hold progress */}
               {isHold && (
                 <div className="hold-progress">
@@ -752,6 +892,12 @@ export default function ExerciseSession({ exerciseConfig: propConfig, onBack: pr
                   >
                     {rep.verdictSource === 'vlm'
                       ? '🤖'
+                      : rep.verdictSource === 'model'
+                      ? '🧠'
+                      : rep.verdictSource === 'offline'
+                      ? '📴'
+                      : rep.verdictSource === 'skipped'
+                      ? '⏭'
                       : rep.verdictSource === 'error'
                       ? '⚡'
                       : rep.verdictSource === 'hold_check'
@@ -773,11 +919,28 @@ export default function ExerciseSession({ exerciseConfig: propConfig, onBack: pr
       {/* Session summary */}
       {showSummary && (
         <SessionSummary
+          sessionId={sessionId}
           repHistory={repHistory}
           exerciseConfig={exerciseConfig}
+          fatigue={fatigue}
           onClose={onBack}
           onRestart={handleStart}
         />
+      )}
+
+      {showSummary && progressionResult && (
+        <div className="progression-banner">
+          <strong>{progressionResult.programName}</strong>
+          {progressionResult.raised ? (
+            <span>
+              🎉 Target raised for {progressionResult.raised.exerciseName}: {progressionResult.raised.from.sets}×{progressionResult.raised.from.reps} → {progressionResult.raised.to.sets}×{progressionResult.raised.to.reps}
+            </span>
+          ) : progressionResult.goodSession ? (
+            <span>✅ Good session — streak {progressionResult.streak}/{progressionResult.required}</span>
+          ) : (
+            <span>Complete all sets with ≥ accuracy target to build your streak ({progressionResult.accuracy}% this time)</span>
+          )}
+        </div>
       )}
 
       {/* Model loading / error states */}

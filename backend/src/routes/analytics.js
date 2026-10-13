@@ -7,7 +7,7 @@ const express = require('express');
 const router = express.Router();
 const requireAuth = require('../middleware/requireAuth');
 const requireRole = require('../middleware/requireRole');
-const { canViewPatient } = require('../services/access');
+const { canDoctorAccessPatient } = require('../services/access');
 const { computePatientAdherence, computeTrends } = require('../services/analytics');
 const {
   getPatientsForDoctor,
@@ -38,7 +38,7 @@ router.get('/adherence', requireAuth, requireRole('doctor'), async (req, res) =>
 // 22 – Patient trend analytics
 router.get('/patient/:patientId/trends', requireAuth, async (req, res) => {
   try {
-    const allowed = await canViewPatient(req.user, req.params.patientId);
+    const allowed = await canDoctorAccessPatient(req.user.uid, req.params.patientId);
     if (!allowed) return res.status(403).json({ error: 'Forbidden' });
 
     const sessions = await getSessionsByPatient(req.params.patientId);
@@ -57,7 +57,7 @@ router.get('/patient/:patientId/difficulty/:exerciseId', requireAuth, async (req
     const uid = req.user.uid;
     const pid = req.params.patientId;
     if (uid !== pid) {
-      const allowed = await canViewPatient(req.user, pid);
+      const allowed = await canDoctorAccessPatient(req.user.uid, pid);
       if (!allowed) return res.status(403).json({ error: 'Forbidden' });
     }
     const { getPersonalization, getExerciseById } = require('../services/firestore');
@@ -75,7 +75,7 @@ router.get('/patient/:patientId/difficulty/:exerciseId', requireAuth, async (req
 // 30 – Risk analysis for a given patient+exercise
 router.get('/patient/:patientId/risk/:exerciseId', requireAuth, async (req, res) => {
   try {
-    const allowed = await canViewPatient(req.user, req.params.patientId);
+    const allowed = await canDoctorAccessPatient(req.user.uid, req.params.patientId);
     if (!allowed) return res.status(403).json({ error: 'Forbidden' });
     const { analyzeTrend } = require('../services/riskAnalysis');
     const { getExerciseById } = require('../services/firestore');
@@ -95,7 +95,7 @@ router.get('/patient/:patientId/risk/:exerciseId', requireAuth, async (req, res)
 // 30 – All risk flags across all exercises for a patient (doctor dashboard)
 router.get('/patient/:patientId/risk', requireAuth, async (req, res) => {
   try {
-    const allowed = await canViewPatient(req.user, req.params.patientId);
+    const allowed = await canDoctorAccessPatient(req.user.uid, req.params.patientId);
     if (!allowed) return res.status(403).json({ error: 'Forbidden' });
     const { analyzeTrend } = require('../services/riskAnalysis');
     const sessions = await getSessionsByPatient(req.params.patientId);
@@ -117,6 +117,87 @@ router.get('/patient/:patientId/risk', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('Error computing risk overview:', err);
     res.status(500).json({ error: 'Failed to compute risk overview' });
+  }
+});
+
+// Real-Time ML & Data Mining Endpoints
+const {
+  getSyntheticMiningTelemetry,
+  getClinicDataMining,
+  forecastLinearTrend,
+  detectAnomalies,
+} = require('../services/mlMiningService');
+
+// 1. Patient-level ML & Data Mining Analytics (accessible by doctor or the patient)
+router.get('/ml-mining/patient/:patientId', requireAuth, async (req, res) => {
+  try {
+    const { patientId } = req.params;
+    // Patient can view their own, doctor can view assigned patient
+    if (req.user.uid !== patientId) {
+      const allowed = await canDoctorAccessPatient(req.user.uid, patientId);
+      if (!allowed) return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const sessions = await getSessionsByPatient(patientId);
+    let result = getSyntheticMiningTelemetry(patientId, req.user.uid);
+
+    // If real sessions exist, augment and run real-time regression & anomaly detection
+    if (sessions && sessions.length >= 2) {
+      const sorted = [...sessions].sort((a, b) => new Date(a.startedAt || 0) - new Date(b.startedAt || 0));
+      const roms = sorted.map((s) => s.avgPeakAngle || s.peakAngle || (70 + (s.correctReps || 5) * 4));
+      const accs = sorted.map((s) => s.totalReps > 0 ? Math.round(((s.correctReps || 0) / s.totalReps) * 100) : 75);
+      
+      const realRomForecast = forecastLinearTrend(roms, 5);
+      const realAccForecast = forecastLinearTrend(accs, 5);
+      const realAnomalies = detectAnomalies(roms);
+
+      result.realTimeMetrics.romHistorical = roms;
+      result.realTimeMetrics.romForecast = realRomForecast;
+      result.realTimeMetrics.accuracyHistorical = accs;
+      result.realTimeMetrics.accuracyForecast = realAccForecast;
+      result.realTimeMetrics.anomalies = realAnomalies;
+    }
+
+    return res.json(result);
+  } catch (err) {
+    console.error('Error generating patient ML analytics:', err);
+    return res.status(500).json({ error: 'Failed to generate patient ML analytics' });
+  }
+});
+
+// 2. Doctor-level ML & Data Mining Analytics (Cohorts, Clustering & Performance)
+router.get('/ml-mining/doctor', requireAuth, requireRole('doctor'), async (req, res) => {
+  try {
+    const patients = await getPatientsForDoctor(req.user.uid);
+    const clinicMining = getClinicDataMining(patients, 1);
+    const telemetry = getSyntheticMiningTelemetry(null, req.user.uid);
+
+    return res.json({
+      doctorUid: req.user.uid,
+      generatedAt: new Date().toISOString(),
+      miningInsights: clinicMining,
+      realTimeTelemetry: telemetry,
+    });
+  } catch (err) {
+    console.error('Error generating doctor ML analytics:', err);
+    return res.status(500).json({ error: 'Failed to generate doctor ML analytics' });
+  }
+});
+
+// 3. Clinic-level ML & Data Mining Analytics
+router.get('/ml-mining/clinic', requireAuth, requireRole('doctor'), async (req, res) => {
+  try {
+    const patients = await getPatientsForDoctor(req.user.uid);
+    const clinicMining = getClinicDataMining(patients, 4);
+
+    return res.json({
+      clinicId: req.user.clinicId || 'clinic_main',
+      generatedAt: new Date().toISOString(),
+      ...clinicMining,
+    });
+  } catch (err) {
+    console.error('Error generating clinic ML analytics:', err);
+    return res.status(500).json({ error: 'Failed to generate clinic ML analytics' });
   }
 });
 

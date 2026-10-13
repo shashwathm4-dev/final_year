@@ -513,10 +513,14 @@ async function upsertUserProfile(uid, data) {
     createdAt: new Date().toISOString(),
   };
 
-  // Local store: keep existing role / doctorId / fullName if the user already exists
+  // Local store: update role if explicitly specified
+  const effectiveRole = data.role === 'doctor' || data.role === 'patient'
+    ? data.role
+    : (existingLocal && existingLocal.role) || 'patient';
+
   localStore.users[uid] = existingLocal
-    ? { ...existingLocal, ...mutable, uid }
-    : { ...createOnly, ...mutable, uid };
+    ? { ...existingLocal, ...mutable, role: effectiveRole, uid }
+    : { ...createOnly, ...mutable, role: effectiveRole, uid };
   persistLocalStore();
 
   if (!db) {

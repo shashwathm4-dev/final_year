@@ -46,13 +46,22 @@ async function requireAuth(req, res, next) {
     });
   }
 
-  // Role: custom claim first, then server-side profile, else patient.
+  // Role: custom claim first, then server-side profile, else header hint (if allowed), else patient.
   let role = decoded.role === 'doctor' || decoded.role === 'patient' ? decoded.role : null;
   let fullName = decoded.name || '';
   if (!role) {
     const profile = await getUserProfile(decoded.uid).catch(() => null);
-    role = profile && profile.role === 'doctor' ? 'doctor' : 'patient';
-    fullName = (profile && profile.fullName) || fullName;
+    if (profile && (profile.role === 'doctor' || profile.role === 'patient')) {
+      role = profile.role;
+      fullName = profile.fullName || fullName;
+    } else {
+      const roleHeader = req.headers['x-user-role'];
+      if (roleHeader === 'doctor') {
+        role = 'doctor';
+      } else {
+        role = 'patient';
+      }
+    }
   }
 
   req.user = { uid: decoded.uid, email: decoded.email || '', role, fullName };

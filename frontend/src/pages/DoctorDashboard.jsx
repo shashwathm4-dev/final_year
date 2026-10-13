@@ -22,7 +22,9 @@ import {
   trainRepModel,
 } from '../services/api';
 import AdherencePanel from '../components/doctor/AdherencePanel';
+import ErrorBoundary from '../components/ErrorBoundary';
 import PatientTrends from '../components/doctor/PatientTrends';
+import MLDataMiningPanel from '../components/analytics/MLDataMiningPanel';
 import SessionPlayback from '../components/doctor/SessionPlayback';
 import SessionComments from '../components/SessionComments';
 import ConnectionBadge from '../components/ConnectionBadge';
@@ -65,19 +67,42 @@ export default function DoctorDashboard() {
   const [unread, setUnread] = useState({ total: 0, bySession: {} });
 
   const selectPatient = async (patient) => {
-    setSelectedPatient(patient);
-    setRisk(null);
+    if (!patient || !patient.uid) return;
     try {
-      const sessions = await getPatientSessions(patient.uid);
-      setPatientSessions(sessions || []);
-    } catch (err) {
-      console.warn('Could not fetch patient sessions:', err);
+      setSelectedPatient(patient);
+      setRisk(null);
       setPatientSessions([]);
+      setPatientPrograms([]);
+
+      // Fetch sessions
+      try {
+        const sessions = await getPatientSessions(patient.uid);
+        setPatientSessions(Array.isArray(sessions) ? sessions : []);
+      } catch (err) {
+        console.warn('Could not fetch patient sessions:', err);
+        setPatientSessions([]);
+      }
+
+      // Fetch programs
+      try {
+        const progs = await getPatientPrograms(patient.uid);
+        setPatientPrograms(Array.isArray(progs) ? progs : []);
+      } catch (err) {
+        console.warn('Could not fetch patient programs:', err);
+        setPatientPrograms([]);
+      }
+
+      // Fetch risk (fire and forget)
+      getPatientRisk(patient.uid)
+        .then((r) => {
+          if (r && Array.isArray(r.results)) setRisk(r.results);
+          else if (r && Array.isArray(r.flags)) setRisk(r.flags);
+          else setRisk([]);
+        })
+        .catch(() => setRisk([]));
+    } catch (outerErr) {
+      console.error('selectPatient crashed:', outerErr);
     }
-    setPatientPrograms(await getPatientPrograms(patient.uid));
-    getPatientRisk(patient.uid)
-      .then((r) => setRisk(r.results || []))
-      .catch(() => setRisk([]));
   };
 
   useEffect(() => {
@@ -239,6 +264,9 @@ export default function DoctorDashboard() {
           </div>
         </div>
         <div className="dashboard-actions">
+          <button className="btn-secondary" onClick={() => navigate('/patient')}>
+            🏃 Patient View
+          </button>
           <button className="btn-primary" onClick={() => navigate('/builder')}>
             + Custom Exercise Builder
           </button>
@@ -271,7 +299,20 @@ export default function DoctorDashboard() {
         <button className={`dash-tab ${tab === 'adherence' ? 'active' : ''}`} onClick={() => setTab('adherence')}>
           🚦 Adherence
         </button>
+        <button className={`dash-tab ${tab === 'ml_analytics' ? 'active' : ''}`} onClick={() => setTab('ml_analytics')}>
+          🧠 ML Data Mining & Analytics
+        </button>
       </div>
+
+      {tab === 'ml_analytics' && (
+        <ErrorBoundary>
+          <MLDataMiningPanel
+            viewMode="doctor"
+            patientId={selectedPatient?.uid || (patients[0]?.uid)}
+            patientName={selectedPatient?.fullName || patients[0]?.fullName || 'Patient'}
+          />
+        </ErrorBoundary>
+      )}
 
       {tab === 'adherence' && <AdherencePanel onOpenPatient={openPatientFromBoard} />}
 
@@ -413,14 +454,14 @@ export default function DoctorDashboard() {
                   </button>
                 </div>
 
-                {patientPrograms.filter((p) => p.status === 'active').map((pp) => (
+                {(Array.isArray(patientPrograms) ? patientPrograms : []).filter((p) => p && p.status === 'active').map((pp) => (
                   <div key={pp.id} className="program-card">
                     <div className="program-card-head">
                       <strong>{pp.programName}</strong>
                       <span className="program-tag">Active</span>
                     </div>
                     <ul className="program-item-list">
-                      {pp.items.map((it, i) => (
+                      {(Array.isArray(pp.items) ? pp.items : []).map((it, i) => (
                         <li key={i}>
                           {it.exerciseName} — now {it.targetSets}×{it.targetReps} · good-session streak {it.goodStreak || 0}/{pp.progression?.goodSessionsRequired ?? 3}
                         </li>
@@ -428,7 +469,7 @@ export default function DoctorDashboard() {
                     </ul>
                     {pp.log && pp.log.length > 0 && (
                       <p className="assignment-meta">
-                        Last increase: {pp.log[pp.log.length - 1].exerciseName} → {pp.log[pp.log.length - 1].to.sets}×{pp.log[pp.log.length - 1].to.reps}
+                        Last increase: {pp.log[pp.log.length - 1]?.exerciseName} → {pp.log[pp.log.length - 1]?.to?.sets}×{pp.log[pp.log.length - 1]?.to?.reps}
                       </p>
                     )}
                   </div>
@@ -452,7 +493,17 @@ export default function DoctorDashboard() {
                 </form>
               </section>
 
-              <PatientTrends patient={selectedPatient} />
+              <ErrorBoundary>
+                <PatientTrends patient={selectedPatient} />
+              </ErrorBoundary>
+
+              <ErrorBoundary>
+                <MLDataMiningPanel
+                  viewMode="patient"
+                  patientId={selectedPatient.uid}
+                  patientName={selectedPatient.fullName || selectedPatient.email}
+                />
+              </ErrorBoundary>
 
               {/* Patient Session Logs */}
               <section className="dashboard-card">
@@ -461,7 +512,7 @@ export default function DoctorDashboard() {
                   <span className="count-badge">{patientSessions.length} sessions</span>
                 </div>
 
-                {patientSessions.length === 0 ? (
+                {(!patientSessions || patientSessions.length === 0) ? (
                   <div className="empty-state">
                     <p>No session data logged yet by this patient.</p>
                     <span className="empty-hint">Completed sessions and real-time form verifications will appear here.</span>
@@ -469,13 +520,14 @@ export default function DoctorDashboard() {
                 ) : (
                   <div className="history-list">
                     {patientSessions.map((s) => {
+                      if (!s) return null;
                       const dateStr = s.startedAt ? new Date(s.startedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Recent';
                       const accuracy = s.totalReps > 0 ? Math.round(((s.correctReps || 0) / s.totalReps) * 100) : 0;
                       return (
-                        <div key={s.sessionId} className="history-entry">
+                        <div key={s.sessionId || Math.random()} className="history-entry">
                           <div className="history-item">
                             <div className="history-main">
-                              <span className="history-name">{s.exerciseId?.replace(/_/g, ' ')}</span>
+                              <span className="history-name">{s.exerciseId ? s.exerciseId.replace(/_/g, ' ') : 'Session'}</span>
                               <span className="history-date">{dateStr}</span>
                             </div>
                             <div className="history-stats">
@@ -486,11 +538,13 @@ export default function DoctorDashboard() {
                             </div>
                           </div>
                           <div className="history-actions">
-                            <button className="btn-link" onClick={() => setPlaybackSessionId(s.sessionId)}>▶ Playback</button>
-                            <button className="btn-link" onClick={() => setOpenCommentsId(openCommentsId === s.sessionId ? null : s.sessionId)}>
-                              💬 Messages
-                              {unread.bySession[s.sessionId] > 0 && <span className="unread-dot">{unread.bySession[s.sessionId]}</span>}
-                            </button>
+                            {s.sessionId && <button className="btn-link" onClick={() => setPlaybackSessionId(s.sessionId)}>▶ Playback</button>}
+                            {s.sessionId && (
+                              <button className="btn-link" onClick={() => setOpenCommentsId(openCommentsId === s.sessionId ? null : s.sessionId)}>
+                                💬 Messages
+                                {unread?.bySession?.[s.sessionId] > 0 && <span className="unread-dot">{unread.bySession[s.sessionId]}</span>}
+                              </button>
+                            )}
                           </div>
                           {openCommentsId === s.sessionId && (
                             <SessionComments sessionId={s.sessionId} myRole="doctor" onRead={refreshUnread} />

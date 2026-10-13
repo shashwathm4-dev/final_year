@@ -21,7 +21,7 @@ import './App.css';
 function RootRedirect() {
   const { user, role, loading } = useAuth();
 
-  if (loading) {
+  if (loading && user) {
     return (
       <div className="auth-loading">
         <div className="loading-spinner" />
@@ -48,7 +48,7 @@ export default function App() {
         <Route
           path="/patient"
           element={
-            <ProtectedRoute allowedRoles={['patient']}>
+            <ProtectedRoute allowedRoles={['patient', 'doctor']}>
               <PatientDashboard />
             </ProtectedRoute>
           }

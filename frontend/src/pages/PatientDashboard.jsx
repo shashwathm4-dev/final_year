@@ -7,6 +7,8 @@ import { useAuth } from '../context/AuthContext';
 import { getAssignments, getMySessions, getExercises, getUnreadComments, downloadProgressReport, getMyRisk } from '../services/api';
 import SessionComments from '../components/SessionComments';
 import ConnectionBadge from '../components/ConnectionBadge';
+import MLDataMiningPanel from '../components/analytics/MLDataMiningPanel';
+import ErrorBoundary from '../components/ErrorBoundary';
 import { useInstallPrompt } from '../hooks/useInstallPrompt';
 import defaultExercisesJson from '../config/exercises.json';
 
@@ -85,6 +87,11 @@ export default function PatientDashboard() {
         </div>
         <div className="dashboard-actions">
           <ConnectionBadge />
+          {user?.role === 'doctor' && (
+            <button className="btn-secondary" onClick={() => navigate('/doctor')}>
+              🩺 Doctor Portal
+            </button>
+          )}
           {canInstall && (
             <button className="btn-secondary" onClick={promptInstall} id="btn-install-app">
               📲 Install App
@@ -245,6 +252,15 @@ export default function PatientDashboard() {
               </div>
             )}
           </section>
+
+          {/* Automatic Real-Time ML Data Mining & Predictive Trajectory */}
+          <ErrorBoundary>
+            <MLDataMiningPanel
+              viewMode="patient"
+              patientId={user?.uid}
+              patientName={fullName || user?.email?.split('@')[0] || 'You'}
+            />
+          </ErrorBoundary>
         </div>
       </div>
     </div>

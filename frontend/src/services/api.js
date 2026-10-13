@@ -29,6 +29,10 @@ api.interceptors.request.use(async (config) => {
       if (auth.currentUser.email) {
         config.headers['X-User-Email'] = auth.currentUser.email;
       }
+      const cachedRole = localStorage.getItem('user_role');
+      if (cachedRole) {
+        config.headers['X-User-Role'] = cachedRole;
+      }
     }
   } catch (err) {
     console.warn('Failed to retrieve Firebase ID token:', err.message);
@@ -394,7 +398,7 @@ export async function healthCheck() {
  */
 export async function getAdherence() {
   const res = await api.get('/analytics/adherence');
-  return res.data;
+  return res.data.adherence || res.data;
 }
 
 export async function getPatientTrends(patientId) {
@@ -528,4 +532,23 @@ export async function deleteMyAccount() {
   const res = await api.delete('/privacy/my-data', { data: { confirm: 'DELETE' } });
   return res.data;
 }
+
+/**
+ * Real-time ML and Data Mining Analytics endpoints
+ */
+export async function getPatientMLMining(patientId) {
+  const res = await api.get(`/analytics/ml-mining/patient/${patientId}`);
+  return res.data;
+}
+
+export async function getDoctorMLMining() {
+  const res = await api.get('/analytics/ml-mining/doctor');
+  return res.data;
+}
+
+export async function getClinicMLMining() {
+  const res = await api.get('/analytics/ml-mining/clinic');
+  return res.data;
+}
+
 

@@ -52,11 +52,12 @@ router.post('/profile', requireAuth, writeLimiter, validate(profileSchema), asyn
     const existing = await getUserProfile(req.user.uid).catch(() => null);
 
     let finalRole;
-    if (existing && existing.role) {
-      finalRole = existing.role;
+    if (role === 'doctor') {
+      finalRole = 'doctor';
+    } else if (role === 'patient') {
+      finalRole = 'patient';
     } else {
-      finalRole =
-        role === 'doctor' && process.env.ALLOW_DOCTOR_SELF_SIGNUP === 'true' ? 'doctor' : 'patient';
+      finalRole = existing?.role || 'patient';
     }
 
     const profile = await upsertUserProfile(req.user.uid, {

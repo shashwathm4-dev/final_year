@@ -12,7 +12,7 @@ function computePatientAdherence(patients, allSessions, assignments) {
   const now = Date.now();
   const WEEK_MS = 7 * 24 * 3600 * 1000;
 
-  return patients.map((p) => {
+  const patientList = patients.map((p) => {
     const pSessions = allSessions.filter((s) => s.patientId === p.uid && s.status === 'completed');
     const pAssignments = assignments.filter((a) => a.patientId === p.uid);
 
@@ -65,18 +65,29 @@ function computePatientAdherence(patients, allSessions, assignments) {
 
     return {
       uid: p.uid,
+      patientId: p.uid,
       fullName: p.fullName || p.email || 'Patient',
       email: p.email || '',
-      status,
+      status: pAssignments.length === 0 ? 'no_plan' : status,
       weeklyPct,
       weeklyDone,
       weeklyTarget,
       avgAccuracy,
       totalSessions: pSessions.length,
       daysSinceLast,
+      lastSessionAt: lastSessionDate ? lastSessionDate.toISOString() : null,
       alerts,
     };
   });
+
+  const totals = {
+    at_risk: patientList.filter((p) => p.status === 'at_risk').length,
+    behind: patientList.filter((p) => p.status === 'behind').length,
+    on_track: patientList.filter((p) => p.status === 'on_track').length,
+    no_plan: patientList.filter((p) => p.status === 'no_plan').length,
+  };
+
+  return { totals, patients: patientList };
 }
 
 /**
@@ -88,6 +99,46 @@ function computeTrends(sessions) {
     .filter((s) => s.status === 'completed')
     .sort((a, b) => new Date(a.startedAt || 0) - new Date(b.startedAt || 0));
 
+  let totalReps = 0;
+  sorted.forEach((s) => {
+    totalReps += Number(s.totalReps) || (Array.isArray(s.reps) ? s.reps.length : 0);
+  });
+
+  // Group by exerciseId
+  const byExercise = {};
+  for (const s of sorted) {
+    const exId = s.exerciseId || 'general';
+    if (!byExercise[exId]) byExercise[exId] = [];
+    byExercise[exId].push(s);
+  }
+
+  const exercises = Object.entries(byExercise).map(([exerciseId, exSessions]) => {
+    const points = exSessions.map((s) => {
+      const date = s.startedAt ? new Date(s.startedAt).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
+      const reps = Array.isArray(s.reps) ? s.reps : [];
+      const peaks = reps.filter((r) => r.peakAngle != null).map((r) => r.peakAngle);
+      const avgPeakAngle = peaks.length > 0 ? Math.round(peaks.reduce((a, b) => a + b, 0) / peaks.length) : (s.avgPeakAngle || 0);
+      const maxPeakAngle = peaks.length > 0 ? Math.round(Math.max(...peaks)) : (s.maxPeakAngle || avgPeakAngle);
+      const accuracy = s.totalReps > 0 ? Math.round(((s.correctReps || 0) / s.totalReps) * 100) : (s.accuracy || 100);
+      const quals = reps.filter((r) => r.qualityScore != null).map((r) => r.qualityScore);
+      const avgQuality = quals.length > 0 ? Math.round(quals.reduce((a, b) => a + b, 0) / quals.length) : (s.avgQuality || 85);
+      return { date, avgPeakAngle, maxPeakAngle, accuracy, avgQuality };
+    });
+
+    const firstRom = points[0]?.avgPeakAngle || 0;
+    const lastRom = points[points.length - 1]?.avgPeakAngle || 0;
+    const romChange = lastRom - firstRom;
+    const direction = romChange > 2 ? 'improving' : romChange < -2 ? 'declining' : 'flat';
+
+    return {
+      exerciseId,
+      points,
+      romChange,
+      direction,
+    };
+  });
+
+  // Flat trends for backward compatibility
   const romPoints = [];
   const accuracyPoints = [];
   const qualityPoints = [];
@@ -97,13 +148,11 @@ function computeTrends(sessions) {
     if (!date) continue;
 
     const reps = Array.isArray(s.reps) ? s.reps : [];
-    // Average peak angle from reps
     const peaks = reps.filter((r) => r.peakAngle != null).map((r) => r.peakAngle);
     if (peaks.length > 0) {
       romPoints.push({ date, value: Math.round(peaks.reduce((a, b) => a + b, 0) / peaks.length) });
     }
 
-    // Accuracy
     if (s.totalReps > 0) {
       accuracyPoints.push({
         date,
@@ -111,14 +160,13 @@ function computeTrends(sessions) {
       });
     }
 
-    // Quality
     const quals = reps.filter((r) => r.qualityScore != null).map((r) => r.qualityScore);
     if (quals.length > 0) {
       qualityPoints.push({ date, value: Math.round(quals.reduce((a, b) => a + b, 0) / quals.length) });
     }
   }
 
-  // Common mistakes
+  // Common mistakes calculation
   const issueMap = {};
   for (const s of sorted) {
     const reps = Array.isArray(s.reps) ? s.reps : [];
@@ -134,16 +182,27 @@ function computeTrends(sessions) {
       }
     }
   }
+
   const commonMistakes = Object.entries(issueMap)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 8)
-    .map(([label, count]) => ({ label, count }));
+    .map(([issue, count]) => ({
+      issue,
+      label: issue,
+      count,
+      pctOfReps: totalReps > 0 ? Math.round((count / totalReps) * 100) : 0,
+    }));
 
   return {
+    totals: {
+      sessions: sorted.length,
+      reps: totalReps,
+    },
+    exercises,
+    commonMistakes,
     rom: romPoints,
     accuracy: accuracyPoints,
     quality: qualityPoints,
-    commonMistakes,
     totalSessions: sorted.length,
   };
 }

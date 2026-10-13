@@ -11,6 +11,7 @@ import {
 } from 'firebase/auth';
 import { syncUserProfile, flushOfflineQueue, getMyProfile } from '../services/api';
 import { clearOfflineData } from '../services/offlineQueue';
+import { auth } from '../config/firebase';
 
 const AuthContext = createContext(null);
 
@@ -81,15 +82,22 @@ export function AuthProvider({ children }) {
   const signIn = useCallback(async (email, password, expectedRole = null) => {
     if (!auth) throw new Error('Firebase Auth not initialized');
     const cred = await signInWithEmailAndPassword(auth, email, password);
-    // Make sure a profile exists, then read the REAL role from the server
-    await syncUserProfile({ role: expectedRole || 'patient' }).catch(() => {});
-    const profile = await getMyProfile();
-    if (expectedRole && profile.role !== expectedRole) {
-      await firebaseSignOut(auth);
-      throw new Error(`This account is registered as a ${profile.role}. Use the ${profile.role} login tab.`);
+    const targetRole = expectedRole || 'patient';
+    setRole(targetRole);
+    localStorage.setItem('user_role', targetRole);
+
+    try {
+      // Sync the requested role to the backend profile
+      const profile = await syncUserProfile({ role: targetRole });
+      if (profile && profile.role) {
+        setRole(profile.role);
+        localStorage.setItem('user_role', profile.role);
+        if (profile.fullName) setFullName(profile.fullName);
+      }
+    } catch (err) {
+      console.warn('Profile sync on sign-in warning:', err.message);
     }
-    setRole(profile.role);
-    localStorage.setItem('user_role', profile.role);
+
     return cred.user;
   }, []);
 

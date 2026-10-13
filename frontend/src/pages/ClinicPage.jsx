@@ -14,6 +14,8 @@ import {
   getClinicPatients,
   downloadProgressReport,
 } from '../services/api';
+import MLDataMiningPanel from '../components/analytics/MLDataMiningPanel';
+import ErrorBoundary from '../components/ErrorBoundary';
 
 export default function ClinicPage() {
   const navigate = useNavigate();
@@ -199,6 +201,11 @@ export default function ClinicPage() {
               </div>
             )}
           </section>
+
+          {/* Real-Time Clinic ML Data Mining & Benchmarking */}
+          <ErrorBoundary>
+            <MLDataMiningPanel viewMode="clinic" />
+          </ErrorBoundary>
         </div>
       )}
     </div>

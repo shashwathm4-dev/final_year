@@ -95,6 +95,56 @@ function buildReport(data) {
     doc.moveDown(0.5);
   }
 
+  // ---------- AI-Generated Clinical Summary (Part B) ----------
+  if (data.aiSummary) {
+    const ai = data.aiSummary;
+    ensureSpace(120);
+    doc.fillColor(DARK).font('Helvetica-Bold').fontSize(12).text('AI-generated summary', left, doc.y);
+    doc.moveDown(0.3);
+
+    if (ai.headline) {
+      doc.fillColor(TEAL).font('Helvetica-Bold').fontSize(10).text(ai.headline, left, doc.y);
+      doc.moveDown(0.2);
+    }
+
+    if (ai.overview) {
+      doc.fillColor(DARK).font('Helvetica').fontSize(9).text(ai.overview, left, doc.y, { width, lineGap: 2 });
+      doc.moveDown(0.4);
+    }
+
+    if (Array.isArray(ai.highlights) && ai.highlights.length > 0) {
+      ensureSpace(40);
+      doc.fillColor(DARK).font('Helvetica-Bold').fontSize(9).text('Highlights:', left, doc.y);
+      ai.highlights.forEach((h) => {
+        doc.font('Helvetica').fontSize(8.5).fillColor(DARK).text(`- ${h}`, left + 10, doc.y + 2, { width: width - 10 });
+      });
+      doc.moveDown(0.3);
+    }
+
+    if (Array.isArray(ai.concerns) && ai.concerns.length > 0) {
+      ensureSpace(40);
+      doc.fillColor(DARK).font('Helvetica-Bold').fontSize(9).text('Areas of concern:', left, doc.y);
+      ai.concerns.forEach((c) => {
+        doc.font('Helvetica').fontSize(8.5).fillColor(DARK).text(`- ${c}`, left + 10, doc.y + 2, { width: width - 10 });
+      });
+      doc.moveDown(0.3);
+    }
+
+    if (Array.isArray(ai.recommendations) && ai.recommendations.length > 0) {
+      ensureSpace(40);
+      doc.fillColor(DARK).font('Helvetica-Bold').fontSize(9).text('Recommendations:', left, doc.y);
+      ai.recommendations.forEach((r) => {
+        doc.font('Helvetica').fontSize(8.5).fillColor(DARK).text(`- ${r}`, left + 10, doc.y + 2, { width: width - 10 });
+      });
+      doc.moveDown(0.3);
+    }
+
+    const sourceLabel = ai.source === 'gemini' ? 'Gemini AI' : 'rule-based clinical heuristics';
+    doc.fillColor(GREY).font('Helvetica-Oblique').fontSize(7.5)
+      .text(`AI-generated from session data — review with your clinician (${sourceLabel})`, left, doc.y + 2);
+    doc.moveDown(0.8);
+  }
+
   // ---------- Per-exercise table ----------
   ensureSpace(80);
   doc.fillColor(DARK).font('Helvetica-Bold').fontSize(12).text('Performance by exercise', left, doc.y);

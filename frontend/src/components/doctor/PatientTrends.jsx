@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { getPatientTrends } from '../../services/api';
 import TrendChart from '../charts/TrendChart';
 

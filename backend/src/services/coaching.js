@@ -177,4 +177,7 @@ Rules:
 module.exports = {
   generateCoachingSummary,
   ruleBasedSummary,
+  _resetThrottle: () => {
+    userThrottleMap.clear();
+  },
 };

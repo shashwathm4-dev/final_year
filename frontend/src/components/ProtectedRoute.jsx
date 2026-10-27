@@ -3,6 +3,7 @@
  * Redirects unauthenticated users to /login.
  * Redirects role mismatches to the correct dashboard.
  */
+import React from 'react';
 import { Navigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 

@@ -3,7 +3,7 @@
  * PoseCamera (smoothed landmarks, real frame size, 3D) -> framing gate -> calibration
  * -> angle -> rep/hold detection -> checkpoints -> AI check -> compensation -> voice.
  */
-import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import PoseCamera from './PoseCamera';
 import FeedbackToast from './FeedbackToast';
@@ -739,7 +739,7 @@ export default function ExerciseSession({ exerciseConfig: propConfig, onBack: pr
             onFrame={handleFrame}
             exerciseConfig={exerciseConfig}
             currentAngle={currentAngle}
-            isActive={isActive || !isActive} // Always run camera, even when paused
+            isActive={true} // Always run camera, even when paused
           />
 
           {/* Pre-session hints */}

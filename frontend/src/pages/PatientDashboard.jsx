@@ -241,6 +241,7 @@ export default function PatientDashboard() {
                       <div className="history-item">
                         <div className="history-main">
                           <span className="history-name">{s.exerciseId?.replace(/_/g, ' ')}</span>
+                          {unread?.bySession?.[s.sessionId] > 0 && <span className="unread-dot">{unread?.bySession?.[s.sessionId]}</span>}
                           {s.coaching?.headline && (
                             <span className="history-sub" style={{ display: 'block', fontSize: '0.78rem', color: 'var(--teal-400)', opacity: 0.9, marginTop: '0.1rem' }}>
                               {s.coaching.headline}

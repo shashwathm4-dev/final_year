@@ -2,6 +2,8 @@
  * Minimal SVG line chart. series: [{ name, color, values: number|null[] }]
  * labels: x-axis labels (same length as values). referenceLines: [{ value, label, color }]
  */
+import React from 'react';
+
 export default function TrendChart({ series, labels = [], height = 180, referenceLines = [], unit = '' }) {
   if (!Array.isArray(series) || series.length === 0) return null;
 

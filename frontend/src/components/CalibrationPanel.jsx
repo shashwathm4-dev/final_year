@@ -1,3 +1,4 @@
+import React from 'react';
 export default function CalibrationPanel({ phase, secondsLeft, liveAngle, onCancel }) {
   if (phase === 'idle') return null;
   const isRest = phase === 'rest';

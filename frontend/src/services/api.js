@@ -322,7 +322,7 @@ export async function flushOfflineQueue() {
       const item = peekQueue()[0];
       try {
         if (item.type === 'start') {
-          const res = await api.post('/session/start', { exerciseId: item.exerciseId });
+          const res = await api.post('/session/start', { exerciseId: item.exerciseId, ...(item.extra || {}) });
           map[item.localId] = res.data.sessionId;
           writeSessionMap(map);
         } else {

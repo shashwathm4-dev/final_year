@@ -6,15 +6,6 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 
-// Auto-seed mock data on startup (idempotent — skips if already seeded)
-try {
-  const { seedData } = require('./scripts/seed');
-  seedData();
-} catch (err) {
-  console.warn('[Server] Auto-seed skipped:', err.message);
-}
-
-
 const verifyRoute = require('./routes/verify');
 const sessionRoute = require('./routes/session');
 const usersRoute = require('./routes/users');
@@ -86,9 +77,18 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Server error' });
 });
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`
+// Start server only when run directly (not when imported for testing)
+if (require.main === module) {
+  // Auto-seed mock data on startup (idempotent — skips if already seeded)
+  try {
+    const { seedData } = require('./scripts/seed');
+    seedData();
+  } catch (err) {
+    console.warn('[Server] Auto-seed skipped:', err.message);
+  }
+
+  app.listen(PORT, () => {
+    console.log(`
   ======================================================
   🚀 AI Physiotherapy Assistant Backend Running!
   ------------------------------------------------------
@@ -98,4 +98,7 @@ app.listen(PORT, () => {
   🔥 Session Logging:     ${require('./config/firebase').db ? 'Firebase Firestore ✓' : 'Local In-Memory Mode ✓'}
   ======================================================
   `);
-});
+  });
+}
+
+module.exports = app;

@@ -27,7 +27,7 @@ if (isClientSdk && db) {
 // Persistent Local Store (File-backed fallback)
 // -------------------------------------------------------------
 const STORE_DIR = path.join(__dirname, '../../data');
-const STORE_PATH = path.join(STORE_DIR, 'store.json');
+const STORE_PATH = process.env.LOCAL_STORE_PATH || path.join(STORE_DIR, 'store.json');
 
 function loadLocalStore() {
   try {
@@ -47,24 +47,26 @@ function loadLocalStore() {
     playback: {},
     personalization: {},
     models: {},
+    programs: {},
+    patientPrograms: {},
+    clinics: {},
   };
 }
 
-const localStore = loadLocalStore();
+let localStore = loadLocalStore();
 // Ensure collections added after the first release exist in older store.json files
-['programs', 'patientPrograms', 'clinics', 'personalization', 'models'].forEach((name) => {
+['programs', 'patientPrograms', 'clinics', 'personalization', 'models', 'sessionComments', 'playback'].forEach((name) => {
   if (!localStore[name]) localStore[name] = {};
 });
-localStore.personalization ||= {};
-localStore.models ||= {};
-// Backfill collections added after initial release
-if (!localStore.sessionComments) localStore.sessionComments = {};
-if (!localStore.playback) localStore.playback = {};
 
 function persistLocalStore() {
+  if (process.env.NODE_ENV === 'test') {
+    return;
+  }
   try {
-    if (!fs.existsSync(STORE_DIR)) {
-      fs.mkdirSync(STORE_DIR, { recursive: true });
+    const dir = path.dirname(STORE_PATH);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
     }
     fs.writeFileSync(STORE_PATH, JSON.stringify(localStore, null, 2), 'utf8');
   } catch (err) {
@@ -1354,4 +1356,10 @@ module.exports = {
   localCol,
   localStore,
   persistLocalStore,
+  _resetLocalStore: () => {
+    Object.keys(localStore).forEach(k => delete localStore[k]);
+    ['users', 'sessions', 'exercises', 'assignedExercises', 'sessionComments', 'playback', 'personalization', 'models', 'programs', 'patientPrograms', 'clinics'].forEach(k => {
+      localStore[k] = {};
+    });
+  },
 };

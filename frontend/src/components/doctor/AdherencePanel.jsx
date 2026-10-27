@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { getAdherence } from '../../services/api';
 
 const LABEL = { on_track: 'On track', behind: 'Behind', at_risk: 'At risk', no_plan: 'No plan' };

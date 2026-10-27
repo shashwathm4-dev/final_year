@@ -1,0 +1,15 @@
+{
+  "sessionId": "sess_1729000000_abc123",
+  "exerciseId": "squat",
+  "repNumber": 1,
+  "timestamp": 1729000005000,
+  "angles": [90.5, 92.1, 88.4],
+  "verdictSource": "local",
+  "correct": true,
+  "issue": null,
+  "severity": null,
+  "tempoScore": 85,
+  "smoothnessScore": 90,
+  "romScore": 92,
+  "qualityScore": 89
+}

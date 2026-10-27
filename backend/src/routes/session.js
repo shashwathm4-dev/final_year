@@ -121,6 +121,13 @@ router.post('/session/end', requireAuth, writeLimiter, validate(sessionEndSchema
     const summary = summarizeSession(session);
     await endSession(req.body.sessionId, { totalReps, correctReps, summary });
 
+    // Fetch finalized session and apply progression
+    const finalized = await getSession(req.body.sessionId);
+    let progression = null;
+    try {
+      progression = await applyProgression(req.body.sessionId);
+    } catch (_) { /* non-fatal */ }
+
     // 28 – Coaching summary
     let coaching = null;
     try {
@@ -159,7 +166,6 @@ router.post('/session/end', requireAuth, writeLimiter, validate(sessionEndSchema
       });
 
       // Persist coaching on the session document
-      const { saveSessionCoaching } = require('../services/firestore');
       await saveSessionCoaching(req.body.sessionId, coaching);
     } catch (cErr) {
       console.warn('[coaching] failed:', cErr.message);

@@ -2,6 +2,7 @@
  * FramingOverlay — tells the user how to stand, before and during a session.
  * Pass lost={true} during a session when tracking is lost.
  */
+import React from 'react';
 export default function FramingOverlay({ status, lost = false }) {
   if (!status) return null;
 

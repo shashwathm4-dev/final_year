@@ -2,7 +2,7 @@
  * SessionSummary — End-of-session stats display.
  * Shows total reps, % correct, common issues, animated counters, fatigue summary, and Gemini/rule-based coaching.
  */
-import { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { getCoachingSummary } from '../services/api';
 import { localCoach } from '../utils/localCoach';
 

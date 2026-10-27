@@ -13,6 +13,10 @@ let isClientSdk = false;
 
 function initFirebase() {
   if (isInitialized) return;
+  if (process.env.NODE_ENV === 'test') {
+    isInitialized = true;
+    return;
+  }
 
   const googleAppCreds = process.env.GOOGLE_APPLICATION_CREDENTIALS;
   const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;

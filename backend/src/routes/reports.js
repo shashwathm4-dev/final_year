@@ -9,6 +9,7 @@ const requireAuth = require('../middleware/requireAuth');
 const requireRole = require('../middleware/requireRole');
 const { canDoctorAccessPatient } = require('../services/access');
 const { buildReport } = require('../services/pdfReport');
+const { generateReportSummary } = require('../services/reportSummary');
 const {
   getUserProfile,
   getSession,
@@ -19,7 +20,7 @@ const {
 
 const MAX_SESSIONS = 60;
 
-async function sendReport(res, patientId, days) {
+async function sendReport(res, patientId, days, skipAi = false) {
   const patient = await getUserProfile(patientId);
   if (!patient) return res.status(404).json({ error: 'Patient not found' });
 
@@ -44,6 +45,15 @@ async function sendReport(res, patientId, days) {
   }
   const programs = await getPatientPrograms(patientId);
 
+  let aiSummary = null;
+  if (!skipAi) {
+    try {
+      aiSummary = await generateReportSummary({ patient, days, sessions, programs });
+    } catch (sErr) {
+      console.warn('[reports] AI summary generation failed:', sErr.message);
+    }
+  }
+
   const doc = buildReport({
     patient,
     doctorName: doctor ? (doctor.fullName || doctor.email) : '',
@@ -51,6 +61,7 @@ async function sendReport(res, patientId, days) {
     days,
     sessions,
     programs,
+    aiSummary,
   });
 
   const safeName = String(patient.fullName || patient.email || 'patient').replace(/[^a-z0-9]+/gi, '_');
@@ -67,7 +78,8 @@ function parseDays(q) {
 
 router.get('/me', requireAuth, async (req, res) => {
   try {
-    await sendReport(res, req.user.uid, parseDays(req.query.days));
+    const skipAi = req.query.ai === '0';
+    await sendReport(res, req.user.uid, parseDays(req.query.days), skipAi);
   } catch (err) {
     console.error('Error generating report:', err);
     if (!res.headersSent) res.status(500).json({ error: 'Failed to generate report' });
@@ -79,7 +91,8 @@ router.get('/patient/:patientId', requireAuth, requireRole('doctor'), async (req
     if (!(await canDoctorAccessPatient(req.user.uid, req.params.patientId))) {
       return res.status(403).json({ error: 'Forbidden: this patient is not in your practice or clinic' });
     }
-    await sendReport(res, req.params.patientId, parseDays(req.query.days));
+    const skipAi = req.query.ai === '0';
+    await sendReport(res, req.params.patientId, parseDays(req.query.days), skipAi);
   } catch (err) {
     console.error('Error generating report:', err);
     if (!res.headersSent) res.status(500).json({ error: 'Failed to generate report' });

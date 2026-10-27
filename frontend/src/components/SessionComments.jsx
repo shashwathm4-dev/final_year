@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { getSessionComments, postSessionComment, markCommentsRead } from '../services/api';
 
 export default function SessionComments({ sessionId, myRole, onRead }) {
@@ -25,7 +25,11 @@ export default function SessionComments({ sessionId, myRole, onRead }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
-  useEffect(() => { endRef.current?.scrollIntoView({ block: 'nearest' }); }, [comments.length]);
+  useEffect(() => {
+    if (typeof endRef.current?.scrollIntoView === 'function') {
+      endRef.current.scrollIntoView({ block: 'nearest' });
+    }
+  }, [comments.length]);
 
   const send = async (e) => {
     e.preventDefault();

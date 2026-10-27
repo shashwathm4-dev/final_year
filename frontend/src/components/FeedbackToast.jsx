@@ -3,7 +3,7 @@
  * Color-coded by verdict: green (correct), amber (minor), red (significant).
  * Shows verdict source badge: "AI Verified", "Angle check only (AI skipped)" or "Angle check failed".
  */
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 
 const SKIP_TEXT = {
   cooldown: 'rate limit',

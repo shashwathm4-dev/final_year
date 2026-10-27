@@ -13,7 +13,7 @@ import {
 } from './offlineQueue';
 
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
   timeout: 6000, // 6s fast fail so UI is snappy; verification calls can use custom timeout
   headers: {
     'Content-Type': 'application/json',
@@ -565,5 +565,114 @@ export async function getClinicMLMining() {
   const res = await api.get('/analytics/ml-mining/clinic');
   return res.data;
 }
+
+/**
+ * Agent coaching API helpers
+ */
+export async function getAgentStatus() {
+  try {
+    const res = await api.get('/agent/status');
+    return res.data;
+  } catch (err) {
+    return { llm: false, consentRequired: true, hasApiKey: false };
+  }
+}
+
+/**
+ * Stream SSE events from /api/agent/* using fetch and ReadableStream.
+ * Handles Authorization token and parses SSE lines.
+ *
+ * @param {string} path - '/agent/chat' or '/agent/assist'
+ * @param {Object} body
+ * @param {Object} handlers - { onToken, onTool, onDone, onError }
+ * @param {AbortSignal} signal
+ */
+export async function streamAgent(path, body, handlers = {}, signal) {
+  const { onToken, onTool, onDone, onError } = handlers;
+  let token = null;
+  if (auth && auth.currentUser) {
+    try {
+      token = await auth.currentUser.getIdToken();
+    } catch (e) {
+      console.warn('Could not retrieve token for agent stream:', e.message);
+    }
+  }
+
+  const headers = {
+    'Content-Type': 'application/json',
+  };
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const endpoint = path.startsWith('/api') ? path : `/api${path.startsWith('/') ? path : `/${path}`}`;
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal,
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      let errMsg = `Request failed: ${response.status}`;
+      try {
+        const parsed = JSON.parse(errText);
+        if (parsed.error) errMsg = parsed.error;
+      } catch {}
+      if (onError) onError(new Error(errMsg));
+      return;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split('\n\n');
+      buffer = lines.pop(); // keep last incomplete chunk
+
+      for (const block of lines) {
+        if (!block.trim()) continue;
+        const subLines = block.split('\n');
+        let currentEvent = 'message';
+        let currentData = '';
+
+        for (const line of subLines) {
+          if (line.startsWith('event:')) {
+            currentEvent = line.slice(6).trim();
+          } else if (line.startsWith('data:')) {
+            currentData = line.slice(5).trim();
+          }
+        }
+
+        try {
+          const parsed = currentData ? JSON.parse(currentData) : {};
+          if (currentEvent === 'token' && onToken && parsed.text) {
+            onToken(parsed.text);
+          } else if (currentEvent === 'tool' && onTool && parsed.name) {
+            onTool(parsed.name);
+          } else if (currentEvent === 'done' && onDone) {
+            onDone(parsed);
+          } else if (currentEvent === 'error' && onError) {
+            onError(new Error(parsed.error || 'Agent stream error'));
+          }
+        } catch (parseErr) {
+          console.warn('[streamAgent] SSE parse error:', parseErr.message, currentData);
+        }
+      }
+    }
+  } catch (err) {
+    if (signal?.aborted) return;
+    if (onError) onError(err);
+  }
+}
+
 
 

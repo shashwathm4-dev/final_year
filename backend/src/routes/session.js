@@ -18,8 +18,10 @@ const { summarizeSession } = require('../services/sessionMetrics');
 const { generateCoachingSummary } = require('../services/coaching');
 const { updateProfileFromSession } = require('../services/personalization');
 const { analyzeTrend } = require('../services/riskAnalysis');
+const { clearUserStore } = require('../services/agent/liveStore');
 
 async function loadOwnedSession(req, res) {
+
   const { sessionId } = req.body;
   if (!sessionId) {
     res.status(400).json({ error: 'Missing required field: sessionId' });
@@ -200,7 +202,15 @@ router.post('/session/end', requireAuth, writeLimiter, validate(sessionEndSchema
       console.warn('[risk] failed:', rErr.message);
     }
 
+    // Clear liveStore telemetry buffer on session end
+    try {
+      clearUserStore(req.user.uid);
+    } catch (cErr) {
+      console.warn('[liveStore] clear error:', cErr.message);
+    }
+
     res.json({ success: true, summary, progression, coaching, difficulty, risk });
+
   } catch (err) {
     console.error('Error ending session:', err);
     res.status(500).json({ error: 'Failed to end session' });

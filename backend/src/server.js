@@ -20,6 +20,8 @@ const programsRoute = require('./routes/programs');
 const reportsRoute = require('./routes/reports');
 const insightsRoute = require('./routes/insights');
 const modelsRoute = require('./routes/models');
+const agentRoute = require('./routes/agent');
+
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -53,6 +55,8 @@ app.use('/api/programs', programsRoute);
 app.use('/api/reports', reportsRoute);
 app.use('/api/insights', insightsRoute);
 app.use('/api/models', modelsRoute);
+app.use('/api/agent', agentRoute);
+
 
 
 // Health check

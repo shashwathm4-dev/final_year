@@ -84,8 +84,10 @@ export default function PrivacyPage() {
             <li>Camera video is never recorded or saved.</li>
             <li>Only numbers are stored: rep counts, joint angles, quality scores, and your assigned exercises.</li>
             <li>With the AI form check on, one still image of your peak pose is sent to Google Gemini per verified rep. It is not stored by this app.</li>
+            <li>Live coaching chat sends only numeric movement data (angles and rep counts, no video or images) to the AI model when cloud AI is consented.</li>
           </ul>
         </section>
+
 
         <section className="dashboard-card">
           <div className="card-header"><h2>AI form check</h2></div>

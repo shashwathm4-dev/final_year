@@ -97,6 +97,58 @@ const deleteAccountSchema = z.object({
   confirm: z.literal('DELETE'),
 });
 
+const agentSnapshotSchema = z.object({
+  t: z.number().optional(),
+  angle: z.number().finite().optional(),
+  state: z.string().max(50).optional(),
+  repCount: z.number().int().min(0).max(10000).optional(),
+  liveFlags: z.array(z.string().max(50)).max(10).optional(),
+  trackingLost: z.boolean().optional(),
+  fatigueLevel: z.string().max(50).optional(),
+});
+
+const agentEventSchema = z.object({
+  type: z.string().max(50).optional(),
+  rep: z.number().int().min(0).max(10000).optional(),
+  correct: z.boolean().nullish(),
+  issue: z.string().max(300).nullish(),
+  compensations: z.array(z.string().max(50)).max(10).optional(),
+  peakAngle: z.number().finite().optional(),
+  qualityScore: score,
+  romScore: score,
+  durationMs: z.number().int().min(0).max(120000).optional(),
+  at: z.number().optional(),
+});
+
+const agentLiveSchema = z.object({
+  sessionId: id,
+  exerciseId: id.optional(),
+  snapshot: agentSnapshotSchema.optional(),
+  events: z.array(agentEventSchema).max(50).optional(),
+});
+
+const agentChatSchema = z.object({
+  message: z.string().trim().max(500),
+  history: z
+    .array(
+      z.object({
+        role: z.string().max(20),
+        text: z.string().max(500).optional(),
+        content: z.string().max(500).optional(),
+      })
+    )
+    .max(10)
+    .optional(),
+  sessionId: id.nullish(),
+});
+
+const agentAssistSchema = z.object({
+  reason: z.enum(['repeated_issue', 'fatigue', 'tracking', 'stalled']).optional(),
+  issue: z.string().max(200).optional(),
+  count: z.number().int().min(0).max(100).optional(),
+  sessionId: id.nullish(),
+});
+
 module.exports = {
   verifyRepSchema,
   sessionStartSchema,
@@ -108,4 +160,8 @@ module.exports = {
   exerciseSchema,
   consentSchema,
   deleteAccountSchema,
+  agentLiveSchema,
+  agentChatSchema,
+  agentAssistSchema,
 };
+

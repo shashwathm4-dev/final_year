@@ -18,7 +18,10 @@ import useHoldDetection from '../hooks/useHoldDetection';
 import useVoiceCoach from '../hooks/useVoiceCoach';
 import useFramingGate from '../hooks/useFramingGate';
 import useCalibration from '../hooks/useCalibration';
+import { useCoachAgent } from '../hooks/useCoachAgent';
+import { ChatCoachPanel } from './ChatCoachPanel';
 import { computeCheckpoints, compareToReference, describeMismatch } from '../utils/checkpointComparison';
+
 import { computeRepQuality, computeHoldQuality, resampleCurve } from '../utils/repQuality';
 import { computeFatigue } from '../utils/fatigueDetection';
 import { useAdaptiveConfig } from '../hooks/useAdaptiveConfig';
@@ -140,9 +143,19 @@ export default function ExerciseSession({ exerciseConfig: propConfig, onBack: pr
   const [progressionResult, setProgressionResult] = useState(null);
   const [liveFlags, setLiveFlags] = useState([]);
   const [skipGate, setSkipGate] = useState(false);
+  const [coachPanelOpen, setCoachPanelOpen] = useState(true);
+
+  const coachAgent = useCoachAgent({
+    exerciseConfig,
+    sessionId,
+    isActive,
+    isOnline: navigator.onLine,
+    onSpeak: (phrase) => speak(phrase, { key: 'coach-agent-speak', interrupt: true, cooldownMs: 1500 }),
+  });
 
   const currentAngleRef = useRef(0);
   const sessionStartRef = useRef(Date.now());
+
   const pendingRepsRef = useRef(new Set());
   const repHistoryRef = useRef([]);
   const fatigueWarnedRef = useRef(false);
@@ -372,18 +385,37 @@ export default function ExerciseSession({ exerciseConfig: propConfig, onBack: pr
         if (severity === 'low') severity = 'medium';
       }
 
-      setFeedback({
+      // Feed alert engine in coachAgent
+      coachAgent.ingestTelemetry({
+        type: 'rep',
+        rep: repNumber,
+        repNumber,
         correct,
         issue,
-        severity,
-        verdictSource,
-        skipReason,
-        source: verdictSource,
-        repNumber,
+        peakAngle: repData.peakAngle,
+        compensations,
+        quality,
         qualityScore: quality.qualityScore,
-        limitingFactor: quality.limitingFactor,
-        modelProb,
+        romScore: quality.romScore,
+        durationMs: repData.durationMs,
+        isHoldRep,
       });
+
+      // Suppress duplicate FeedbackToast when panel is open
+      if (!coachPanelOpen) {
+        setFeedback({
+          correct,
+          issue,
+          severity,
+          verdictSource,
+          skipReason,
+          source: verdictSource,
+          repNumber,
+          qualityScore: quality.qualityScore,
+          limitingFactor: quality.limitingFactor,
+          modelProb,
+        });
+      }
 
       const historyEntry = {
         repNumber,
@@ -411,6 +443,7 @@ export default function ExerciseSession({ exerciseConfig: propConfig, onBack: pr
       });
 
       coachAfterRep({ correct, quality, peakAngle: repData.peakAngle, repNumber, compensations, isHoldRep });
+
 
       // Log to backend (+ skeleton playback for the doctor)
       const playback = buildPlaybackPayload(frames, {
@@ -505,6 +538,17 @@ export default function ExerciseSession({ exerciseConfig: propConfig, onBack: pr
         setLiveFlags(flags);
       }
 
+      // Ingest live snapshot into coach agent (throttled internally to <=1/s)
+      coachAgent.ingestTelemetry({
+        type: 'snapshot',
+        angle,
+        state: repState,
+        repCount,
+        liveFlags: flags,
+        trackingLost: false,
+        fatigueLevel: fatigue.level,
+      });
+
       addFrame({
         timestamp,
         angle,
@@ -515,7 +559,7 @@ export default function ExerciseSession({ exerciseConfig: propConfig, onBack: pr
         flags,
       });
     },
-    [evaluateGate, isActive, computeAngle, calibAddSample, calibIsRunning, addFrame, exerciseConfig.compensationChecks]
+    [evaluateGate, isActive, computeAngle, calibAddSample, calibIsRunning, addFrame, exerciseConfig.compensationChecks, repState, repCount, fatigue.level, coachAgent]
   );
 
   // Tracking lost / restored (item 10)
@@ -524,12 +568,15 @@ export default function ExerciseSession({ exerciseConfig: propConfig, onBack: pr
     if (trackingLost && !wasLostRef.current) {
       wasLostRef.current = true;
       abortCurrent();
+      coachAgent.ingestTelemetry({ type: 'tracking', trackingLost: true });
       speak("I can't see you. Step back into view.", { key: 'lost', cooldownMs: 6000, interrupt: true });
     } else if (!trackingLost && wasLostRef.current) {
       wasLostRef.current = false;
+      coachAgent.ingestTelemetry({ type: 'tracking', trackingLost: false });
       speak('Tracking restored.', { key: 'restored', cooldownMs: 3000 });
     }
-  }, [trackingLost, abortCurrent, speak]);
+  }, [trackingLost, abortCurrent, speak, coachAgent]);
+
 
   // Calibration voice prompt for step 2
   useEffect(() => {
@@ -911,9 +958,24 @@ export default function ExerciseSession({ exerciseConfig: propConfig, onBack: pr
             </div>
           </div>
         )}
+
+        {/* Live AI Coaching Sidebar */}
+        {isActive && (
+          <ChatCoachPanel
+            agent={coachAgent}
+            currentAngle={currentAngle}
+            targetRange={exerciseConfig.target_angle_range || [80, 100]}
+            isOnline={navigator.onLine}
+            isOpen={coachPanelOpen}
+            onToggleOpen={setCoachPanelOpen}
+            voiceEnabled={voiceEnabled}
+            onToggleVoice={toggleVoice}
+          />
+        )}
       </div>
 
       {/* Feedback toast */}
+
       <FeedbackToast feedback={feedback} onDismiss={() => setFeedback(null)} />
 
       {/* Session summary */}

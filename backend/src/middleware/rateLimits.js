@@ -33,4 +33,19 @@ const logRepLimiter = createLimiter({ windowMs: 60 * 1000, limit: 90 });
 // Other writes: sessions, assignments, exercises, profile, privacy actions
 const writeLimiter = createLimiter({ windowMs: 60 * 1000, limit: 60 });
 
-module.exports = { createLimiter, globalLimiter, verifyLimiter, logRepLimiter, writeLimiter };
+// Live session telemetry push (~3/sec per user)
+const agentLiveLimiter = createLimiter({ windowMs: 1000, limit: 5, message: 'Too many live telemetry updates' });
+
+// Agent chat requests (12/min per user)
+const agentChatLimiter = createLimiter({ windowMs: 60 * 1000, limit: 12, message: 'Chat rate limit reached, please wait a moment' });
+
+module.exports = {
+  createLimiter,
+  globalLimiter,
+  verifyLimiter,
+  logRepLimiter,
+  writeLimiter,
+  agentLiveLimiter,
+  agentChatLimiter,
+};
+

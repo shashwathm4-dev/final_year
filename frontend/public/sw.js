@@ -70,12 +70,17 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url);
 
   if (url.origin === self.location.origin) {
+    // Explicitly bypass agent streaming and live telemetry from SW handling
+    if (url.pathname.startsWith('/api/agent/')) {
+      return;
+    }
     if (url.pathname.startsWith('/api/')) {
       if (API_GET_ALLOW.some((p) => url.pathname === p || url.pathname.startsWith(`${p}/`))) {
         event.respondWith(networkFirst(request, API_CACHE));
       }
       return; // other API calls go straight to the network
     }
+
     if (request.mode === 'navigate') {
       event.respondWith(networkFirst(request, SHELL_CACHE, '/index.html'));
       return;

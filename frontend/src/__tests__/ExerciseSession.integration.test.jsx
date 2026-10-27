@@ -11,6 +11,7 @@ vi.mock('../context/AuthContext', () => ({
 vi.mock('react-router-dom', () => ({
   useParams: () => ({ exerciseId: 'squat' }),
   useNavigate: () => vi.fn(),
+  Link: ({ children, to, ...props }) => <a href={to} {...props}>{children}</a>,
 }));
 
 vi.mock('../services/api', async (importOriginal) => {

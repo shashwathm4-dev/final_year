@@ -71,77 +71,96 @@ Real-time posture tracking and AI-powered form verification for physiotherapy ex
 
 ### Prerequisites
 
-- **Node.js 18+**
+- **Docker & Docker Compose** (Recommended for 1-command startup) **OR** **Node.js 18+** / **npm 9+**
 - **Web camera** access in your browser
-- **Firebase project** with Auth + Firestore enabled
-- **Gemini API key** (free from Google AI Studio)
+- **Firebase project** with Auth + Firestore enabled (or use dev mode with local `store.json`)
+- **Google Gemini API key** (free from [Google AI Studio](https://aistudio.google.com/))
 
-### 1. Clone the repository
+---
 
+### Option A: Running with Docker (Recommended)
+
+Run the full stack (Node backend + React/Nginx frontend + local data persistence) with a single command.
+
+#### 1. Setup Environment
+Ensure `backend/.env` exists with your keys (see [Environment Variables](#environment-variables)):
 ```bash
-git clone <repo-url>
-cd final_year
+# In backend/.env
+GEMINI_API_KEY=your_gemini_api_key_here
 ```
 
-### 2. Backend setup
+#### 2. Start Containers
+```bash
+# Build images and start containers in the background
+docker compose up -d --build
+```
 
+#### 3. Access the Application
+- **Frontend App**: [http://localhost:3000](http://localhost:3000)
+- **Backend API**: [http://localhost:3001/api/health](http://localhost:3001/api/health)
+
+#### 4. Managing Docker
+```bash
+# View live logs
+docker compose logs -f
+
+# Rebuild and restart only the backend container after code changes:
+docker compose up -d --build backend
+
+# Rebuild and restart only the frontend container:
+docker compose up -d --build frontend
+
+# Stop containers
+docker compose down
+```
+
+> **Data Persistence & Auto-Seeding**: The local database `./backend/data/store.json` is mounted as a volume. On startup, the backend automatically initializes and seeds mock clinics, patients, and sessions idempotently.
+
+---
+
+### Option B: Running Locally (Native Node.js)
+
+#### 1. Backend Setup
 ```bash
 cd backend
 npm install
 ```
 
-Create a `backend/.env` file:
-
+Configure `backend/.env`:
 ```env
-# Google Gemini (required for VLM verification & coaching)
-GEMINI_API_KEY=AIzaSy...
-
-# Firebase Admin SDK — pick one method:
-# Method 1: Service account JSON file
-GOOGLE_APPLICATION_CREDENTIALS=./serviceAccountKey.json
-
-# Method 2: Environment variables
-# FIREBASE_PROJECT_ID=your-project-id
-# FIREBASE_CLIENT_EMAIL=firebase-adminsdk-xxxxx@your-project.iam.gserviceaccount.com
-# FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
-
-# Optional
 PORT=3001
 CORS_ORIGIN=http://localhost:3000
-TRUST_PROXY=1
+GEMINI_API_KEY=AIzaSy...
+ALLOW_INSECURE_DEV_AUTH=true
 ```
 
-Start the server:
-
+Start the backend:
 ```bash
-node src/server.js
+npm start
+# or: node src/server.js
 ```
+The backend starts at **`http://localhost:3001`** and auto-seeds mock data if not already present.
 
-The backend runs at **`http://localhost:3001`**.
-
-### 3. Frontend setup
-
+#### 2. Frontend Setup
+In a new terminal:
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
+The frontend Vite dev server will run at **`http://localhost:3000`**.
 
-The frontend runs at **`http://localhost:3000`**.
+---
 
-### 4. Run tests
+### Testing & Verification
 
 ```bash
-# Backend (Node.js built-in test runner)
-cd backend
-npm test
+# Run backend tests (Node.js test runner)
+cd backend && npm test
 
-# Frontend (Vitest)
-cd frontend
-npm test
+# Run frontend tests (Vitest)
+cd frontend && npm test
 ```
-
-### 5. Production build
 
 ```bash
 cd frontend
@@ -351,56 +370,42 @@ final_year/
 
 ---
 
-## Docker & One-Command Run
+## Docker & Container Management
 
-The repository contains preconfigured Dockerfiles for both frontend (nginx proxy) and backend (Express), unified with Docker Compose.
+The repository contains preconfigured Dockerfiles for both frontend (Nginx proxy) and backend (Express), orchestrated via `docker-compose.yml`.
 
-### Run the Whole Application in One Command
+### Quick Cheat Sheet
 
-```bash
-docker compose up --build
-```
+| Task | Command |
+|------|---------|
+| **Start everything (build fresh)** | `docker compose up -d --build` |
+| **Rebuild backend only (after backend code changes)** | `docker compose up -d --build backend` |
+| **Rebuild frontend only (after UI changes)** | `docker compose up -d --build frontend` |
+| **View combined live logs** | `docker compose logs -f` |
+| **View backend logs only** | `docker compose logs -f backend` |
+| **Check container health status** | `docker compose ps` |
+| **Stop and shut down containers** | `docker compose down` |
 
-- **Frontend Application**: [http://localhost:3000](http://localhost:3000)
-- **Backend API Direct**: [http://localhost:3001/api/health](http://localhost:3001/api/health)
-- **API Proxy**: Frontend automatically proxies `/api/*` to the backend container internally via Nginx.
-
-### Files Created:
-1. `docker-compose.yml` — Runs backend & frontend containers with health checks and volume/env wiring.
-2. `backend/Dockerfile` & `backend/.dockerignore` — Node 20 Alpine production image.
-3. `frontend/Dockerfile`, `frontend/.dockerignore`, & `frontend/nginx.conf` — Multi-stage build producing static assets served by Nginx with reverse proxy and caching.
-
-To run in the background (detached):
-```bash
-docker compose up --build -d
-```
-
-To stop:
-```bash
-docker compose down
-```
+### Architecture in Docker
+- **Frontend Container** (`cognisense-frontend`): Runs a multi-stage Nginx build on port `3000`. Directs UI traffic and internally proxies `/api/*` calls to the backend container.
+- **Backend Container** (`cognisense-backend`): Runs Node 20 Express on port `3001` with an internal health check against `/api/health`.
+- **Database Volume**: Mounts `./backend/data` into `/app/data` inside the container so all user profiles, assigned exercises, and completed workout sessions persist across container restarts.
 
 ---
 
-## Scripts Reference
+## Scripts & Database Seeding
 
-### Backend
-
-| Command | Description |
-|---------|-------------|
-| `npm start` | Start the server (`node src/server.js`) |
-| `npm test` | Run tests with Node.js built-in test runner |
-| `npm run train:model` | Train the on-device rep classifier |
-
-### Frontend
-
-| Command | Description |
-|---------|-------------|
-| `npm run dev` | Start Vite dev server with HMR |
-| `npm run build` | Production build to `dist/` |
-| `npm run preview` | Preview the production build locally |
-| `npm test` | Run Vitest test suite |
-| `npm run lint` | Lint with oxlint |
+### Seeding Mock Data
+The backend automatically runs `backend/src/scripts/seed.js` idempotently on startup. To manually re-seed or verify mock data:
+```bash
+# Run seed script directly
+node backend/src/scripts/seed.js
+```
+The seed generates:
+- Clinic records (e.g., Asaara Ortho, Apex Sports Rehab)
+- Doctors and assigned patients
+- Assigned exercise programs and routine targets
+- Realistic session history with rep checkpoints and ROM angles for analytics
 
 ### Admin Scripts (Backend)
 
@@ -408,7 +413,7 @@ docker compose down
 # Promote a user to doctor role
 node src/scripts/promoteDoctor.js <user-uid>
 
-# Seed default exercises into Firestore
+# Seed default exercises into database
 node src/scripts/seedExercises.js
 
 # Train the on-device rep classifier from session data

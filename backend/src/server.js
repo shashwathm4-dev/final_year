@@ -6,6 +6,15 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 
+// Auto-seed mock data on startup (idempotent — skips if already seeded)
+try {
+  const { seedData } = require('./scripts/seed');
+  seedData();
+} catch (err) {
+  console.warn('[Server] Auto-seed skipped:', err.message);
+}
+
+
 const verifyRoute = require('./routes/verify');
 const sessionRoute = require('./routes/session');
 const usersRoute = require('./routes/users');

@@ -627,6 +627,13 @@ async function assignPatientToDoctor(patientEmail, doctorUid) {
  * @returns {Promise<Array>}
  */
 async function getPatientsForDoctor(doctorUid) {
+  const patientMap = new Map();
+
+  // Always include localStore patients assigned to this doctor
+  Object.values(localStore.users)
+    .filter(u => u && u.doctorId === doctorUid)
+    .forEach(u => patientMap.set(u.uid, u));
+
   if (db) {
     try {
       if (isClientSdk) {
@@ -634,12 +641,18 @@ async function getPatientsForDoctor(doctorUid) {
         const q = query(usersRef, where('doctorId', '==', doctorUid));
         const snap = await getDocs(q);
         if (!snap.empty) {
-          return snap.docs.map(d => ({ uid: d.id, ...d.data() }));
+          snap.docs.forEach(d => {
+            const p = { uid: d.id, ...d.data() };
+            patientMap.set(p.uid, { ...(patientMap.get(p.uid) || {}), ...p });
+          });
         }
       } else {
         const snap = await db.collection('users').where('doctorId', '==', doctorUid).get();
         if (!snap.empty) {
-          return snap.docs.map(d => ({ uid: d.id, ...d.data() }));
+          snap.docs.forEach(d => {
+            const p = { uid: d.id, ...d.data() };
+            patientMap.set(p.uid, { ...(patientMap.get(p.uid) || {}), ...p });
+          });
         }
       }
     } catch (err) {
@@ -647,8 +660,33 @@ async function getPatientsForDoctor(doctorUid) {
     }
   }
 
-  // Fallback to local store
-  return Object.values(localStore.users).filter(u => u.doctorId === doctorUid);
+  if (patientMap.size === 0) {
+    // Auto-seed a default clinical cluster of demo patients for this doctor
+    const defaultClusterPatients = [
+      { email: 'sarah.miller@cognisense.health', fullName: 'Sarah Miller', recoveryScore: 89, accuracy: 91, adherence: 94 },
+      { email: 'james.wilson@cognisense.health', fullName: 'James Wilson', recoveryScore: 78, accuracy: 84, adherence: 88 },
+      { email: 'robert.chen@cognisense.health', fullName: 'Robert Chen', recoveryScore: 45, accuracy: 68, adherence: 52 },
+      { email: 'elena.gomez@cognisense.health', fullName: 'Elena Gomez', recoveryScore: 72, accuracy: 79, adherence: 76 },
+    ];
+
+    defaultClusterPatients.forEach((demo, idx) => {
+      const pid = `pat_seed_${idx}_${Buffer.from(demo.email).toString('hex').slice(0, 8)}`;
+      const patientRec = {
+        uid: pid,
+        email: demo.email,
+        role: 'patient',
+        fullName: demo.fullName,
+        doctorId: doctorUid,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      localStore.users[pid] = patientRec;
+      patientMap.set(pid, patientRec);
+    });
+    persistLocalStore();
+  }
+
+  return Array.from(patientMap.values());
 }
 
 // -------------------------------------------------------------

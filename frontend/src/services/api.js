@@ -246,17 +246,17 @@ export async function getPatientSessions(patientId) {
  * @param {Object} extra
  * @returns {Promise<{ sessionId: string }>}
  */
-export async function startSession(exerciseId) {
+export async function startSession(exerciseId, extra = {}) {
   const makeLocalSession = () => {
     const localId = `local_${Date.now()}`;
-    enqueue({ type: 'start', localId, exerciseId });
+    enqueue({ type: 'start', localId, exerciseId, extra });
     return { sessionId: localId };
   };
 
   if (!navigator.onLine) return makeLocalSession();
 
   try {
-    const res = await api.post('/session/start', { exerciseId });
+    const res = await api.post('/session/start', { exerciseId, ...extra });
     return res.data;
   } catch (err) {
     console.warn('Failed to start session on backend — running offline', err.message);
@@ -283,20 +283,30 @@ export async function endSession(sessionData) {
   const isLocalSession = String(sessionData.sessionId || '').startsWith('local_');
   if (isLocalSession || !navigator.onLine) {
     enqueue({ type: 'end', payload: sessionData });
+    try {
+      window.dispatchEvent(new CustomEvent('session-completed', { detail: sessionData }));
+    } catch (_) {}
     return { success: false, queued: true };
   }
   try {
     const res = await api.post('/session/end', sessionData);
+    try {
+      window.dispatchEvent(new CustomEvent('session-completed', { detail: sessionData }));
+    } catch (_) {}
     return res.data;
   } catch (err) {
     console.warn('Failed to end session on backend:', err.message);
     if (isNetworkError(err)) {
       enqueue({ type: 'end', payload: sessionData });
+      try {
+        window.dispatchEvent(new CustomEvent('session-completed', { detail: sessionData }));
+      } catch (_) {}
       return { success: false, queued: true };
     }
     return { success: false };
   }
 }
+
 
 /**
  * Replay queued offline requests in order. Safe to call repeatedly.
@@ -436,7 +446,12 @@ export async function markCommentsRead(sessionId) {
 export async function getUnreadComments() {
   try {
     const res = await api.get('/comments/unread');
-    return res.data;
+    const d = res.data || {};
+    const bySession = d.bySession || d.counts || {};
+    const total = typeof d.total === 'number'
+      ? d.total
+      : Object.values(bySession).reduce((a, b) => a + b, 0);
+    return { total, bySession };
   } catch {
     return { total: 0, bySession: {} };
   }

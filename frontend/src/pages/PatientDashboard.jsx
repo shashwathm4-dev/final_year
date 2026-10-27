@@ -43,33 +43,51 @@ export default function PatientDashboard() {
   const refreshUnread = () => getUnreadComments().then(setUnread);
   useEffect(() => { refreshUnread(); }, []);
 
-  useEffect(() => {
-    async function loadPatientData() {
-      try {
-        const [assigned, sessions, allExercises, riskData] = await Promise.all([
-          getAssignments().catch(() => []),
-          getMySessions().catch(() => []),
-          getExercises().catch(() => staticExercises),
-          getMyRisk().catch(() => ({ results: [] })),
-        ]);
-        setAssignments((assigned || []).filter((a) => a.status !== 'archived'));
-        setRecentSessions(sessions || []);
-        if (allExercises && allExercises.length > 0) {
-          setAvailableExercises(allExercises);
-        }
-        const nonLow = (riskData?.results || []).filter((r) => r.riskLevel && r.riskLevel !== 'low');
-        if (nonLow.length > 0) {
-          const flags = nonLow.flatMap((r) => r.flags || []);
-          const topFlag = flags[0]?.message || 'Your recent sessions show a change worth mentioning to your physiotherapist.';
-          setRiskAlert(topFlag);
-        }
-      } catch (err) {
-        console.error('Error loading patient dashboard data:', err);
-      } finally {
-        setLoading(false);
+  const loadPatientData = async () => {
+    try {
+      const [assigned, sessions, allExercises, riskData] = await Promise.all([
+        getAssignments().catch(() => []),
+        getMySessions().catch(() => []),
+        getExercises().catch(() => staticExercises),
+        getMyRisk().catch(() => ({ results: [] })),
+      ]);
+      setAssignments((assigned || []).filter((a) => a.status !== 'archived'));
+      setRecentSessions(sessions || []);
+      if (allExercises && allExercises.length > 0) {
+        setAvailableExercises(allExercises);
       }
+      const nonLow = (riskData?.results || []).filter((r) => r.riskLevel && r.riskLevel !== 'low');
+      if (nonLow.length > 0) {
+        const flags = nonLow.flatMap((r) => r.flags || []);
+        const topFlag = flags[0]?.message || 'Your recent sessions show a change worth mentioning to your physiotherapist.';
+        setRiskAlert(topFlag);
+      }
+    } catch (err) {
+      console.error('Error loading patient dashboard data:', err);
+    } finally {
+      setLoading(false);
     }
+  };
+
+  useEffect(() => {
     loadPatientData();
+
+    const handleSessionCompleted = () => {
+      loadPatientData();
+      refreshUnread();
+    };
+
+    const handleFocus = () => {
+      loadPatientData();
+    };
+
+    window.addEventListener('session-completed', handleSessionCompleted);
+    window.addEventListener('focus', handleFocus);
+
+    return () => {
+      window.removeEventListener('session-completed', handleSessionCompleted);
+      window.removeEventListener('focus', handleFocus);
+    };
   }, []);
 
   return (
@@ -240,7 +258,7 @@ export default function PatientDashboard() {
                       <div className="history-actions">
                         <button className="btn-link" onClick={() => setOpenCommentsId(openCommentsId === s.sessionId ? null : s.sessionId)}>
                           💬 Doctor feedback
-                          {unread.bySession[s.sessionId] > 0 && <span className="unread-dot">{unread.bySession[s.sessionId]}</span>}
+                          {unread?.bySession?.[s.sessionId] > 0 && <span className="unread-dot">{unread?.bySession?.[s.sessionId]}</span>}
                         </button>
                       </div>
                       {openCommentsId === s.sessionId && (

@@ -190,13 +190,32 @@ export default function DoctorDashboard() {
         const [patientsRes, exercisesRes, programsRes, clinicRes] = await Promise.all([
           getDoctorPatients().catch(() => ({ patients: [] })),
           getExercises().catch(() => staticExercises),
-          getPrograms(),
-          getMyClinic(),
+          getPrograms().catch(() => []),
+          getMyClinic().catch(() => ({ clinic: null })),
         ]);
-        setPrograms(programsRes);
+        setPrograms(programsRes || []);
         setHasClinic(!!clinicRes?.clinic);
-        const pts = patientsRes.patients || [];
+
+        // Retrieve any locally cached patients to protect against empty cloud returns
+        let cachedPts = [];
+        try {
+          const raw = localStorage.getItem('doctor_patients_cache');
+          if (raw) cachedPts = JSON.parse(raw);
+        } catch { /* ignore */ }
+
+        const apiPts = Array.isArray(patientsRes?.patients) ? patientsRes.patients : [];
+        // Merge API patients with cached patients
+        const mergedMap = new Map();
+        [...cachedPts, ...apiPts].forEach((p) => {
+          if (p && p.uid) mergedMap.set(p.uid, p);
+        });
+        const pts = Array.from(mergedMap.values());
+
         setPatients(pts);
+        if (pts.length > 0) {
+          localStorage.setItem('doctor_patients_cache', JSON.stringify(pts));
+        }
+
         if (exercisesRes && exercisesRes.length > 0) {
           setExercises(exercisesRes);
         }
@@ -219,10 +238,14 @@ export default function DoctorDashboard() {
     try {
       const res = await addDoctorPatient(newPatientEmail.trim());
       if (res.patient) {
-        setPatients((prev) => [...prev, res.patient]);
+        setPatients((prev) => {
+          const updated = [...prev.filter((p) => p.uid !== res.patient.uid), res.patient];
+          try { localStorage.setItem('doctor_patients_cache', JSON.stringify(updated)); } catch {}
+          return updated;
+        });
         setNewPatientEmail('');
         setStatusMsg(`✓ Successfully added patient ${res.patient.email}`);
-        if (!selectedPatient) selectPatient(res.patient);
+        selectPatient(res.patient);
       }
     } catch (err) {
       setStatusMsg(`✗ ${err.response?.data?.error || 'Failed to add patient'}`);
@@ -454,26 +477,28 @@ export default function DoctorDashboard() {
                   </button>
                 </div>
 
-                {(Array.isArray(patientPrograms) ? patientPrograms : []).filter((p) => p && p.status === 'active').map((pp) => (
-                  <div key={pp.id} className="program-card">
-                    <div className="program-card-head">
-                      <strong>{pp.programName}</strong>
-                      <span className="program-tag">Active</span>
+                {(Array.isArray(patientPrograms) ? patientPrograms : [])
+                  .filter((p) => p && p.status === 'active')
+                  .map((pp) => (
+                    <div key={pp?.id || Math.random()} className="program-card">
+                      <div className="program-card-head">
+                        <strong>{pp?.programName || 'Active Program'}</strong>
+                        <span className="program-tag">Active</span>
+                      </div>
+                      <ul className="program-item-list">
+                        {(Array.isArray(pp?.items) ? pp.items : []).map((it, i) => (
+                          <li key={i}>
+                            {it?.exerciseName || 'Exercise'} — now {it?.targetSets || 1}×{it?.targetReps || 10} · good-session streak {it?.goodStreak || 0}/{pp?.progression?.goodSessionsRequired ?? 3}
+                          </li>
+                        ))}
+                      </ul>
+                      {Array.isArray(pp?.log) && pp.log.length > 0 && (
+                        <p className="assignment-meta">
+                          Last increase: {pp.log[pp.log.length - 1]?.exerciseName || 'Routine'} → {pp.log[pp.log.length - 1]?.to?.sets || 1}×{pp.log[pp.log.length - 1]?.to?.reps || 10}
+                        </p>
+                      )}
                     </div>
-                    <ul className="program-item-list">
-                      {(Array.isArray(pp.items) ? pp.items : []).map((it, i) => (
-                        <li key={i}>
-                          {it.exerciseName} — now {it.targetSets}×{it.targetReps} · good-session streak {it.goodStreak || 0}/{pp.progression?.goodSessionsRequired ?? 3}
-                        </li>
-                      ))}
-                    </ul>
-                    {pp.log && pp.log.length > 0 && (
-                      <p className="assignment-meta">
-                        Last increase: {pp.log[pp.log.length - 1]?.exerciseName} → {pp.log[pp.log.length - 1]?.to?.sets}×{pp.log[pp.log.length - 1]?.to?.reps}
-                      </p>
-                    )}
-                  </div>
-                ))}
+                  ))}
 
                 <form onSubmit={handleAssignProgram} className="prescribe-form">
                   <div className="form-row">
@@ -524,7 +549,7 @@ export default function DoctorDashboard() {
                       const dateStr = s.startedAt ? new Date(s.startedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Recent';
                       const accuracy = s.totalReps > 0 ? Math.round(((s.correctReps || 0) / s.totalReps) * 100) : 0;
                       return (
-                        <div key={s.sessionId || Math.random()} className="history-entry">
+                        <div key={s.sessionId || `${s.startedAt}-${s.exerciseId}`} className="history-entry">
                           <div className="history-item">
                             <div className="history-main">
                               <span className="history-name">{s.exerciseId ? s.exerciseId.replace(/_/g, ' ') : 'Session'}</span>

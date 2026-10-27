@@ -20,8 +20,9 @@ const {
 // Unread badge counts
 router.get('/unread', requireAuth, async (req, res) => {
   try {
-    const counts = await getUnreadCounts(req.user.uid);
-    res.json({ counts });
+    const bySession = await getUnreadCounts(req.user.uid);
+    const total = Object.values(bySession).reduce((a, b) => a + b, 0);
+    res.json({ total, bySession, counts: bySession });
   } catch (err) {
     console.error('Error fetching unread counts:', err);
     res.status(500).json({ error: 'Failed to fetch unread counts' });

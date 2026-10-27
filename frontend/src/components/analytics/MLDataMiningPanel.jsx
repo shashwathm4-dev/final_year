@@ -156,6 +156,11 @@ export default function MLDataMiningPanel({ viewMode = 'patient', patientId = nu
   const [activeTab, setActiveTab] = useState(viewMode); // 'patient' | 'doctor' | 'clinic'
   const [pulseCount, setPulseCount] = useState(0);
 
+  // Keep activeTab synced if viewMode prop changes
+  useEffect(() => {
+    setActiveTab(viewMode);
+  }, [viewMode]);
+
   // Automatically fetch data based on the chosen mode
   useEffect(() => {
     let isMounted = true;

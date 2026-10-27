@@ -37,7 +37,7 @@ async function loadOwnedSession(req, res) {
   return session;
 }
 
-router.post('/session/start', writeLimiter, validate(sessionStartSchema), async (req, res) => {
+router.post('/session/start', requireAuth, writeLimiter, validate(sessionStartSchema), async (req, res) => {
   try {
     const exerciseId = typeof req.body.exerciseId === 'string' ? req.body.exerciseId : 'unknown';
     const { clientSessionId, startedAt, difficulty } = req.body;

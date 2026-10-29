@@ -20,16 +20,21 @@ function initFirebase() {
 
   const googleAppCreds = process.env.GOOGLE_APPLICATION_CREDENTIALS;
   const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
+  const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
   const projectId = process.env.FIREBASE_PROJECT_ID;
   const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-  const privateKey = process.env.FIREBASE_PRIVATE_KEY;
+  let privateKey = process.env.FIREBASE_PRIVATE_KEY;
   const enableWebFirestore = process.env.ENABLE_WEB_FIRESTORE === 'true';
 
   // 1. Try Admin SDK first if service account credentials exist
-  if (googleAppCreds || serviceAccountPath || (projectId && clientEmail && privateKey)) {
+  if (serviceAccountJson || googleAppCreds || serviceAccountPath || (projectId && clientEmail && privateKey)) {
     try {
       let credential;
-      if (googleAppCreds) {
+      if (serviceAccountJson) {
+        const sa = typeof serviceAccountJson === 'string' ? JSON.parse(serviceAccountJson) : serviceAccountJson;
+        credential = admin.credential.cert(sa);
+        console.log('✓  Initializing Firebase Admin SDK via FIREBASE_SERVICE_ACCOUNT_JSON');
+      } else if (googleAppCreds) {
         credential = admin.credential.applicationDefault();
         console.log('✓  Initializing Firebase Admin SDK via GOOGLE_APPLICATION_CREDENTIALS');
       } else if (serviceAccountPath) {
@@ -41,10 +46,14 @@ function initFirebase() {
         credential = admin.credential.cert(serviceAccount);
         console.log(`✓  Initializing Firebase Admin SDK via Service Account File: ${resolvedPath}`);
       } else {
+        if (privateKey) {
+          privateKey = privateKey.replace(/^["']|["']$/g, '');
+          privateKey = privateKey.replace(/\\n/g, '\n');
+        }
         credential = admin.credential.cert({
           projectId,
           clientEmail,
-          privateKey: privateKey.replace(/\\n/g, '\n'),
+          privateKey,
         });
         console.log('✓  Initializing Firebase Admin SDK via environment variables');
       }

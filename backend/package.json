@@ -7,6 +7,7 @@
     "start": "node src/server.js",
     "dev": "node src/server.js",
     "train:model": "node src/scripts/trainRepClassifier.js",
+    "seed:firestore": "node src/scripts/seedFirestore.js",
     "test": "node --test",
     "test:coverage": "node --test --experimental-test-coverage"
   },

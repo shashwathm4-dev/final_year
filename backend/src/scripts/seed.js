@@ -8,7 +8,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const STORE_PATH = path.join(__dirname, '../../data/store.json');
+const STORE_PATH = process.env.LOCAL_STORE_PATH || path.join(__dirname, '../../data/store.json');
 
 function seedData() {
   let store = {

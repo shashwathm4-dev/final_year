@@ -4,6 +4,7 @@
  */
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
 require('dotenv').config();
 
 const verifyRoute = require('./routes/verify');
@@ -69,6 +70,19 @@ app.get('/api/health', (req, res) => {
       geminiConfigured: !!process.env.GEMINI_API_KEY,
       firebaseConfigured: !!process.env.FIREBASE_PROJECT_ID,
     },
+  });
+});
+
+// Serve frontend static files if built (e.g. single-container Docker / Render deployment)
+const publicPath = path.join(__dirname, '..', 'public');
+app.use(express.static(publicPath));
+
+// For all non-API GET routes, fall back to index.html for SPA routing
+app.get('*', (req, res, next) => {
+  if (req.path.startsWith('/api')) return next();
+  const indexPath = path.join(publicPath, 'index.html');
+  res.sendFile(indexPath, (err) => {
+    if (err) next();
   });
 });
 
